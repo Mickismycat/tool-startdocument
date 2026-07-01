@@ -1,49 +1,36 @@
-# Startdocument Generator v0.3
+# Startdocument Generator v0.4
 
-Online Streamlit-app voor het genereren van een Cooble startdocument op basis van:
+Online Streamlit-app voor het genereren van een Cooble startdocument.
 
-1. Vacaturetekst
-2. Intake-notities
-3. Doelgroepgrootte gevonden op LinkedIn (optioneel)
-4. Extra opmerkingen (optioneel)
+## Nieuw in v0.4
 
-## Update in GitHub
+- Datum wordt altijd automatisch gezet op de generatiedatum van vandaag.
+- No-go sourcing toont alleen bedrijfsnamen.
+- No-go sourcing wordt aangevuld vanuit intake-notities, zodat losse bedrijfsnamen in een no-go/check-eerst blok niet wegvallen.
+- Belangrijkste arbeidsvoorwaarden worden generiek gemaakt, bijvoorbeeld `Vakantiedagen` in plaats van `29 vakantiedagen`.
+- Eén bullet = één onderwerp. Samengestelde bullets worden waar mogelijk opgesplitst.
+- Leeftijdsverdeling bevat categorieën én percentages.
+- Slide-template heeft nu ook een placeholder voor leeftijdsverdeling.
 
-Upload/vervang deze bestanden in je bestaande repository:
+## Deployen
 
-- `app.py`
-- `requirements.txt`
-- `templates/Startdocument_Cooble_template.pptx`
-
-## Streamlit Secrets
-
-Plaats je OpenAI API-key in Streamlit Cloud onder **App → Settings → Secrets**:
-
-```toml
-OPENAI_API_KEY = "sk-proj-..."
-```
-
-Optioneel:
+1. Pak de zip uit.
+2. Upload/vervang alle bestanden in je GitHub-repository.
+3. Commit changes.
+4. Streamlit redeployt automatisch.
+5. Controleer in Streamlit Secrets dat dit aanwezig is:
 
 ```toml
-OPENAI_MODEL = "gpt-4.1-mini"
+OPENAI_API_KEY = "jouw-nieuwe-api-key"
 ```
 
-## Gebruik
+## Bestanden
 
-1. Upload/plak vacaturetekst.
-2. Upload/plak intake-notities.
-3. Vul eventueel doelgroepgrootte gevonden op LinkedIn in, bijvoorbeeld `± 500`.
-4. Vul eventueel extra opmerkingen in.
-5. Klik op **Genereer analyse**.
-6. Controleer en bewerk de preview.
-7. Download het PowerPoint-startdocument.
+- `app.py` — hoofdapplicatie
+- `requirements.txt` — Python packages
+- `templates/Startdocument_Cooble_template.pptx` — vaste PowerPoint-template
 
-## Ontwerpregels
+## Testen
 
-- Eén intake = één vacature.
-- Concurrentenanalyse is altijd relevant en op bedrijfsniveau.
-- Pullfactoren zijn extern en worden niet uit de vacature afgeleid.
-- Arbeidsvoorwaarden worden gekozen vanuit wat de doelgroep belangrijk vindt.
-- No-go sourcing wordt niet verzonnen.
-- Vrij formuleren mag, feiten niet verzinnen.
+Start eerst met **Testmodus zonder API-key** om te controleren of preview en PowerPoint-export werken.
+Daarna kun je **AI-generatie** gebruiken met een echte vacature en intake.

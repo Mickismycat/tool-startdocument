@@ -61,6 +61,173 @@ def clean_list(items: List[str]) -> List[str]:
     return [str(x).strip(" •-\n\t") for x in (items or []) if str(x).strip(" •-\n\t")]
 
 
+def split_one_topic_per_bullet(items: List[str]) -> List[str]:
+    """Zorgt dat samengestelde bullets worden opgeknipt naar één onderwerp per bullet."""
+    result: List[str] = []
+    for raw in clean_list(items):
+        text = raw.strip()
+        # Splits alleen op duidelijke opsommingen, niet op woorden als "Learning & Development".
+        parts = re.split(r"\s*(?:;|/|\+|,\s*(?=[A-ZÀ-ÖØ-Þ]))\s*", text)
+        expanded: List[str] = []
+        for part in parts:
+            # Splits op " en " alleen als beide delen kort genoeg zijn om losse thema's te zijn.
+            sub = re.split(r"\s+en\s+", part)
+            if len(sub) == 2 and all(1 <= len(x.split()) <= 4 for x in sub):
+                expanded.extend(sub)
+            else:
+                expanded.append(part)
+        for part in expanded:
+            part = part.strip(" •-\n\t")
+            if part and part not in result:
+                result.append(part)
+    return result
+
+
+def normalize_condition_label(text: str) -> str:
+    """Maakt arbeidsvoorwaarden generiek: 29 vakantiedagen -> Vakantiedagen."""
+    text = str(text or "").strip(" •-\n\t")
+    text = re.sub(r"^\d+\s*(?:\+\s*\d+\s*)?(?:verlof)?dagen\b.*", "Vakantiedagen", text, flags=re.I)
+    text = re.sub(r"^\d+\s*uur\b.*", "Werkuren", text, flags=re.I)
+    text = re.sub(r"^€\s*[\d\.,]+.*", "Salaris", text, flags=re.I)
+    text = re.sub(r"\bgoede\b\s+", "", text, flags=re.I).strip()
+    if text.lower() in {"verlofdagen", "vakantie", "vrije dagen"}:
+        text = "Vakantiedagen"
+    if text.lower() in {"thuiswerken", "mogelijkheid om thuis te werken", "remote werken"}:
+        text = "Hybride werken"
+    return text[:1].upper() + text[1:] if text else text
+
+
+def normalize_conditions(items: List[str]) -> List[str]:
+    out: List[str] = []
+    for item in split_one_topic_per_bullet(items):
+        item = normalize_condition_label(item)
+        if item and item not in out:
+            out.append(item)
+    return out[:3]
+
+
+def normalize_age_distribution(items: List[str]) -> List[str]:
+    """Zorgt dat leeftijdscategorieën altijd een percentage bevatten."""
+    values = clean_list(items)
+    defaults = ["25-34: 30%", "35-44: 35%", "45-54: 25%", "55+: 10%"]
+    if not values:
+        return defaults
+    # Als de AI alleen categorieën teruggeeft, voeg standaardpercentages toe.
+    default_percentages = ["30%", "35%", "25%", "10%", "0%"]
+    result = []
+    for i, val in enumerate(values[:5]):
+        if "%" not in val:
+            val = f"{val}: {default_percentages[i] if i < len(default_percentages) else '0%'}"
+        result.append(val)
+    return result
+
+
+def clean_company_name(text: str) -> str:
+    text = str(text or "").strip(" •-–—\n\t")
+    text = re.sub(r"\s*\([^)]*\)\s*", " ", text).strip()
+    remove_phrases = [
+        "liever ook niet", "ook niet", "niet benaderen", "niet sourcen", "no go",
+        "no-go", "eerst checken", "eerst check", "samenwerkingscontracten", "samenwerkingscontract",
+        "concurrent", "concurrenten", "die wil hij", "die wil zij", "die wil men",
+    ]
+    lowered = text.lower()
+    for phrase in remove_phrases:
+        lowered = lowered.replace(phrase, "")
+    # behoud hoofdletters zo veel mogelijk door dezelfde woorden uit originele tekst grof te verwijderen
+    text = re.sub(r"(?i)liever ook niet|ook niet|niet benaderen|niet sourcen|no[- ]?go|eerst checken|eerst check|samenwerkingscontracten?|concurrenten?|die wil hij.*|die wil zij.*|die wil men.*", "", text).strip(" :;,-")
+    # Pak alleen het eerste deel als er uitleg achter staat.
+    text = re.split(r"\s+-\s+|\s+:\s+", text)[0].strip()
+    # Veelgemaakte notatie normaliseren.
+    replacements = {
+        "witteveen en bos": "Witteveen+Bos",
+        "witteveen+bos": "Witteveen+Bos",
+        "haskoning": "Royal HaskoningDHV",
+        "royal haskoning": "Royal HaskoningDHV",
+        "antea": "Antea Group",
+        "sweco": "Sweco",
+    }
+    key = text.lower().replace("&", "en").strip()
+    return replacements.get(key, text)
+
+
+def extract_no_go_companies_from_intake(intake_text: str) -> List[str]:
+    """Haalt expliciet genoemde no-go/check-eerst organisaties uit intakeblokken."""
+    if not intake_text:
+        return []
+    lines = [ln.strip() for ln in intake_text.splitlines()]
+    triggers = ["no-go", "no go", "niet sourcen", "niet benaderen", "samenwerkingscontract", "eerst checken", "liever ook niet"]
+    companies: List[str] = []
+    collect_next = False
+    remaining = 0
+    for raw in lines:
+        line = raw.strip(" •\t")
+        low = line.lower()
+        if not line:
+            if collect_next:
+                remaining -= 1
+                if remaining <= 0:
+                    collect_next = False
+            continue
+        has_trigger = any(t in low for t in triggers)
+        if has_trigger:
+            # Bedrijven kunnen op dezelfde regel of op de regels erna staan.
+            collect_next = True
+            remaining = 8
+            cleaned = clean_company_name(line)
+            if cleaned and len(cleaned.split()) <= 5 and cleaned.lower() not in {"samenwerkingscontract", "samenwerkingscontracten"}:
+                companies.append(cleaned)
+            continue
+        if collect_next:
+            # Stop bij duidelijke nieuwe vraag/sectie zonder bedrijfsnaam.
+            if line.startswith("·") or line.lower().startswith(("meer voorbeeld", "mailtje", "laura", "koen")):
+                collect_next = False
+                continue
+            # Split meerdere bedrijven op komma's of slashes.
+            parts = re.split(r",|/|;", line)
+            for part in parts:
+                cleaned = clean_company_name(part)
+                if cleaned and len(cleaned.split()) <= 5:
+                    companies.append(cleaned)
+            remaining -= 1
+            if remaining <= 0:
+                collect_next = False
+    # Deduplicate, behoud volgorde
+    result = []
+    for c in companies:
+        if c and c not in result:
+            result.append(c)
+    return result
+
+
+def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: str) -> Dict[str, Any]:
+    """Harde sprint-0.4 regels die altijd gelden, ook na AI-generatie."""
+    data = ensure_core_keys(data)
+    data.setdefault("basisgegevens", {})["datum"] = date.today().strftime("%d-%m-%Y")
+
+    if linkedin_size.strip():
+        data.setdefault("doelgroepanalyse", {})["verwachte_doelgroepgrootte"] = linkedin_size.strip()
+
+    # No-go sourcing: alleen bedrijven, volledig uit intake/extra/AI-output, aangevuld met deterministische extractie.
+    k = data.setdefault("kandidaatprofiel", {})
+    ai_no_go = clean_list(k.get("no_go_sourcing", []))
+    extracted = extract_no_go_companies_from_intake(intake_text)
+    merged = []
+    for item in ai_no_go + extracted:
+        item = clean_company_name(item)
+        if item and len(item.split()) <= 5 and item not in merged:
+            merged.append(item)
+    k["no_go_sourcing"] = merged
+
+    # Pullfactoren en voorwaarden: één onderwerp per bullet.
+    d = data.setdefault("doelgroepanalyse", {})
+    d["pullfactoren"] = split_one_topic_per_bullet(d.get("pullfactoren", []))[:3]
+    d["leeftijdsverdeling"] = normalize_age_distribution(d.get("leeftijdsverdeling", []))
+
+    v = data.setdefault("voorwaarden", {})
+    v["belangrijkste_arbeidsvoorwaarden"] = normalize_conditions(v.get("belangrijkste_arbeidsvoorwaarden", []))
+    return data
+
+
 def bullets(items: List[str]) -> str:
     return "\n".join(clean_list(items))
 
@@ -136,6 +303,7 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         "{{belangrijkste_arbeidsvoorwaarden}}": bullets(get_nested(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", [])),
         "{{geslacht_man}}": get_nested(data, "doelgroepanalyse.geslacht.man"),
         "{{geslacht_vrouw}}": get_nested(data, "doelgroepanalyse.geslacht.vrouw"),
+        "{{leeftijdsverdeling}}": bullets(get_nested(data, "doelgroepanalyse.leeftijdsverdeling", [])),
         "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
         "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
         "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
@@ -215,13 +383,16 @@ Belangrijke regels:
 - Formuleer kort en bondig, PowerPoint-stijl.
 - Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
 - Vrij formuleren mag, maar niet fantaseren.
-- No-go organisaties alleen uit intake of extra opmerkingen halen, nooit zelf bedenken.
+- Datum: laat leeg of gebruik vandaag; de app overschrijft dit altijd met de generatiedatum.
+- No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen.
 - Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
-- Arbeidsvoorwaarden: bepaal welke voorwaarden voor deze doelgroep belangrijk zijn via arbeidsmarktanalyse en koppel dit aan wat de vacature biedt.
+- Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
+- Eén bullet = één onderwerp. Combineer nooit meerdere onderwerpen in één bullet.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
 - Houd lijsten kort: meestal precies 3 bullets.
 - Gebruik zelfverzekerde labels zoals "Hybride werken", niet "waarschijnlijk hybride werken".
+- Leeftijdsverdeling: geef categorie én percentage, bijvoorbeeld "25-34: 30%".
 - Als doelgroepgrootte uit LinkedIn is ingevuld, gebruik die waarde letterlijk.
 
 {schema_hint()}
@@ -406,9 +577,7 @@ if st.button("Genereer analyse", type="primary"):
                     st.write("AI-analyse starten")
                     prompt = build_prompt(vacature_text, intake_text, linkedin_size, extra_notes)
                     data = generate_with_openai(prompt)
-                data = ensure_core_keys(data)
-                if linkedin_size.strip():
-                    data.setdefault("doelgroepanalyse", {})["verwachte_doelgroepgrootte"] = linkedin_size.strip()
+                data = apply_business_rules(data, intake_text + "\n" + extra_notes, linkedin_size)
                 st.session_state.data = data
                 status.update(label="Analyse klaar", state="complete", expanded=False)
             st.success("Analyse klaar. Controleer en pas eventueel aan.")
@@ -425,7 +594,8 @@ if st.session_state.data:
         c1, c2, c3 = st.columns(3)
         b["klantnaam"] = c1.text_input("Klantnaam", b.get("klantnaam", ""))
         b["vacaturenaam"] = c2.text_input("Vacaturenaam", b.get("vacaturenaam", ""))
-        b["datum"] = c3.text_input("Datum", b.get("datum", date.today().strftime("%d-%m-%Y")))
+        b["datum"] = date.today().strftime("%d-%m-%Y")
+        c3.text_input("Datum", b["datum"], disabled=True, help="Altijd de generatiedatum van vandaag.")
         c4, c5, c6 = st.columns(3)
         b["locatie"] = c4.text_input("Locatie", b.get("locatie", ""))
         b["uren"] = c5.text_input("Uren", b.get("uren", ""))
@@ -477,6 +647,8 @@ if st.session_state.data:
 
     st.subheader("3. PowerPoint downloaden")
     try:
+        data = apply_business_rules(data, "", linkedin_size)
+        st.session_state.data = data
         pptx_bytes = generate_pptx(data)
         klant = get_nested(data, "basisgegevens.klantnaam", "klant") or "klant"
         vacature = get_nested(data, "basisgegevens.vacaturenaam", "vacature") or "vacature"
