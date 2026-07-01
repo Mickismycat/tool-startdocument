@@ -1,43 +1,29 @@
-# Startdocument Generator
+# Startdocument Generator v0.3
 
-Online Streamlit-app voor het genereren van een Cooble startdocument PowerPoint op basis van vacaturetekst, intake-notities en optionele doelgroepnotities.
+Online Streamlit-app voor het genereren van een Cooble startdocument op basis van:
 
-## Bestanden
+1. Vacaturetekst
+2. Intake-notities
+3. Doelgroepgrootte gevonden op LinkedIn (optioneel)
+4. Extra opmerkingen (optioneel)
 
-```text
-app.py
-requirements.txt
-templates/Startdocument_Cooble_template.pptx
-.streamlit/secrets.toml.example
-```
+## Update in GitHub
 
-## Deploy naar Streamlit Cloud
+Upload/vervang deze bestanden in je bestaande repository:
 
-1. Maak een **private GitHub repository** aan, bijvoorbeeld `startdocument-tool`.
-2. Upload alle bestanden uit deze map naar de repository.
-3. Ga naar Streamlit Cloud.
-4. Klik op **Create app**.
-5. Kies je GitHub repository.
-6. Main file path: `app.py`.
-7. Klik op **Deploy**.
+- `app.py`
+- `requirements.txt`
+- `templates/Startdocument_Cooble_template.pptx`
 
-## OpenAI API-key toevoegen
+## Streamlit Secrets
 
-Zet je API-key nooit in GitHub.
-
-Ga in Streamlit Cloud naar:
-
-```text
-App → Settings → Secrets
-```
-
-Plak daar:
+Plaats je OpenAI API-key in Streamlit Cloud onder **App → Settings → Secrets**:
 
 ```toml
 OPENAI_API_KEY = "sk-proj-..."
 ```
 
-Optioneel kun je het model overschrijven:
+Optioneel:
 
 ```toml
 OPENAI_MODEL = "gpt-4.1-mini"
@@ -45,22 +31,19 @@ OPENAI_MODEL = "gpt-4.1-mini"
 
 ## Gebruik
 
-1. Open de Streamlit-link.
-2. Upload of plak de vacaturetekst.
-3. Upload of plak de intake-notities.
-4. Vul optioneel LinkedIn/doelgroep-notities en extra opmerkingen in.
+1. Upload/plak vacaturetekst.
+2. Upload/plak intake-notities.
+3. Vul eventueel doelgroepgrootte gevonden op LinkedIn in, bijvoorbeeld `± 500`.
+4. Vul eventueel extra opmerkingen in.
 5. Klik op **Genereer analyse**.
-6. Controleer en pas de preview aan.
-7. Download de PowerPoint.
+6. Controleer en bewerk de preview.
+7. Download het PowerPoint-startdocument.
 
-## Testmodus
-
-De app heeft een testmodus zonder API-key. Daarmee kun je controleren of Streamlit en PowerPoint-export werken voordat je de AI-koppeling gebruikt.
-
-## Belangrijke ontwerpregels
+## Ontwerpregels
 
 - Eén intake = één vacature.
 - Concurrentenanalyse is altijd relevant en op bedrijfsniveau.
-- No-go organisaties worden nooit zelf bedacht.
-- Pullfactoren zijn extern en doelgroepgericht.
-- Formulering mag vrij zijn, maar de AI mag niet fantaseren.
+- Pullfactoren zijn extern en worden niet uit de vacature afgeleid.
+- Arbeidsvoorwaarden worden gekozen vanuit wat de doelgroep belangrijk vindt.
+- No-go sourcing wordt niet verzonnen.
+- Vrij formuleren mag, feiten niet verzinnen.

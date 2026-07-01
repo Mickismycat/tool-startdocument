@@ -9,6 +9,7 @@ import streamlit as st
 from docx import Document
 from openai import OpenAI
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
 APP_TITLE = "Startdocument Generator"
@@ -20,8 +21,14 @@ st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 
 def read_docx(file) -> str:
     doc = Document(file)
-    parts = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n".join(parts)
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    table_text = []
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                table_text.append(" | ".join(cells))
+    return "\n".join(paragraphs + table_text)
 
 
 def read_pdf(file) -> str:
@@ -38,22 +45,28 @@ def read_uploaded_file(file) -> str:
     if file is None:
         return ""
     name = file.name.lower()
-    if name.endswith(".docx"):
-        return read_docx(file)
-    if name.endswith(".pdf"):
-        return read_pdf(file)
-    if name.endswith(".txt"):
-        return file.read().decode("utf-8", errors="ignore")
+    try:
+        if name.endswith(".docx"):
+            return read_docx(file)
+        if name.endswith(".pdf"):
+            return read_pdf(file)
+        if name.endswith(".txt"):
+            return file.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        raise RuntimeError(f"Kon bestand '{file.name}' niet uitlezen: {exc}")
     return ""
 
 
+def clean_list(items: List[str]) -> List[str]:
+    return [str(x).strip(" •-\n\t") for x in (items or []) if str(x).strip(" •-\n\t")]
+
+
 def bullets(items: List[str]) -> str:
-    clean = [str(x).strip(" •-\n\t") for x in (items or []) if str(x).strip()]
-    return "\n".join(clean)
+    return "\n".join(clean_list(items))
 
 
 def get_nested(data: Dict[str, Any], path: str, default: Any = "") -> Any:
-    cur = data
+    cur: Any = data
     for part in path.split("."):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
@@ -62,34 +75,42 @@ def get_nested(data: Dict[str, Any], path: str, default: Any = "") -> Any:
     return cur
 
 
-def safe_join(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, list):
-        return bullets(value)
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
-
-
-def replace_text_in_shape(shape, replacements: Dict[str, str]):
-    if not hasattr(shape, "text_frame"):
+def replace_text_in_shape(shape, replacements: Dict[str, str]) -> None:
+    # Recurse into grouped shapes.
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            replace_text_in_shape(subshape, replacements)
         return
-    for paragraph in shape.text_frame.paragraphs:
-        for run in paragraph.runs:
-            text = run.text
-            for key, value in replacements.items():
-                text = text.replace(key, value)
-            run.text = text
+
+    # Replace in normal text frames.
+    if hasattr(shape, "text_frame") and shape.has_text_frame:
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                text = run.text
+                for key, value in replacements.items():
+                    text = text.replace(key, value)
+                run.text = text
+
+    # Replace in tables.
+    if hasattr(shape, "has_table") and shape.has_table:
+        for row in shape.table.rows:
+            for cell in row.cells:
+                for paragraph in cell.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        text = run.text
+                        for key, value in replacements.items():
+                            text = text.replace(key, value)
+                        run.text = text
 
 
 def generate_pptx(data: Dict[str, Any]) -> bytes:
+    if not TEMPLATE_PATH.exists():
+        raise RuntimeError(f"Template niet gevonden: {TEMPLATE_PATH}")
+
     prs = Presentation(str(TEMPLATE_PATH))
     afspraken = data.get("afspraken") or []
     concurrenten = get_nested(data, "concurrentenanalyse.bedrijven", [])
-    concurrenten_text = bullets(concurrenten)
-    if not concurrenten_text:
-        concurrenten_text = get_nested(data, "concurrentenanalyse.toelichting", "")
+    concurrenten_text = bullets(concurrenten) or get_nested(data, "concurrentenanalyse.toelichting", "")
 
     replacements = {
         "{{klantnaam}}": get_nested(data, "basisgegevens.klantnaam"),
@@ -102,6 +123,11 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         "{{zoekrichting}}": bullets(get_nested(data, "sourcingplan.zoekrichting", [])),
         "{{aanpak_toelichting}}": get_nested(data, "sourcingplan.toelichting"),
         "{{doelgroep_titel}}": get_nested(data, "doelgroepanalyse.doelgroep_titel") or get_nested(data, "basisgegevens.vacaturenaam"),
+        "{{taken_verantwoordelijkheden}}": bullets(get_nested(data, "functieprofiel.taken_verantwoordelijkheden", [])),
+        "{{eisen}}": bullets(get_nested(data, "kandidaatprofiel.eisen", [])),
+        "{{voorkeuren}}": bullets(get_nested(data, "kandidaatprofiel.voorkeuren", [])),
+        "{{no_go_sourcing}}": bullets(get_nested(data, "kandidaatprofiel.no_go_sourcing", [])),
+        "{{doelgroepgrootte}}": get_nested(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
         "{{salaris}}": get_nested(data, "basisgegevens.salaris"),
         "{{locatie}}": get_nested(data, "basisgegevens.locatie"),
         "{{uren}}": get_nested(data, "basisgegevens.uren"),
@@ -114,6 +140,7 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
         "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
     }
+
     for slide in prs.slides:
         for shape in slide.shapes:
             replace_text_in_shape(shape, replacements)
@@ -154,7 +181,7 @@ Geef uitsluitend geldige JSON terug in exact deze structuur:
     "regio": "Nederland",
     "pullfactoren": ["", "", ""],
     "geslacht": {"man": "", "vrouw": ""},
-    "leeftijdsverdeling": []
+    "leeftijdsverdeling": ["", "", "", ""]
   },
   "sourcingplan": {
     "doelgroep": "",
@@ -178,23 +205,24 @@ Geef uitsluitend geldige JSON terug in exact deze structuur:
 """.strip()
 
 
-def build_prompt(vacature: str, intake: str, linkedin_notes: str, extra: str) -> str:
+def build_prompt(vacature: str, intake: str, linkedin_size: str, extra: str) -> str:
     return f"""
 Je bent een senior recruitment consultant en arbeidsmarktanalist. Maak compacte inhoud voor een Cooble startdocument.
 
-Regels:
+Belangrijke regels:
 - Output is Nederlands.
-- Formuleer kort en bondig, PowerPoint-stijl.
 - Eén intake = één vacature.
+- Formuleer kort en bondig, PowerPoint-stijl.
 - Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
 - Vrij formuleren mag, maar niet fantaseren.
 - No-go organisaties alleen uit intake of extra opmerkingen halen, nooit zelf bedenken.
-- Pullfactoren zijn extern: bepaal ze vanuit de arbeidsmarkt/doelgroep, niet uit de vacaturetekst.
-- Arbeidsvoorwaarden: bepaal welke voorwaarden voor deze doelgroep belangrijk zijn; combineer arbeidsmarktanalyse met wat de vacature biedt.
+- Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
+- Arbeidsvoorwaarden: bepaal welke voorwaarden voor deze doelgroep belangrijk zijn via arbeidsmarktanalyse en koppel dit aan wat de vacature biedt.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
-- Houd lijsten kort: meestal 3 bullets.
+- Houd lijsten kort: meestal precies 3 bullets.
 - Gebruik zelfverzekerde labels zoals "Hybride werken", niet "waarschijnlijk hybride werken".
+- Als doelgroepgrootte uit LinkedIn is ingevuld, gebruik die waarde letterlijk.
 
 {schema_hint()}
 
@@ -204,8 +232,8 @@ VACATURETEKST:
 INTAKE NOTES:
 {intake[:30000]}
 
-LINKEDIN / DOELGROEP-NOTITIES:
-{linkedin_notes[:10000]}
+DOELGROEPGROOTTE GEVONDEN OP LINKEDIN:
+{linkedin_size[:500]}
 
 EXTRA OPMERKINGEN:
 {extra[:10000]}
@@ -213,7 +241,7 @@ EXTRA OPMERKINGEN:
 
 
 def extract_json(text: str) -> Dict[str, Any]:
-    text = text.strip()
+    text = (text or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?", "", text).strip()
         text = re.sub(r"```$", "", text).strip()
@@ -233,7 +261,7 @@ def generate_with_openai(prompt: str) -> Dict[str, Any]:
     client = OpenAI(api_key=api_key)
     model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
 
-    # First try Responses API with web search. If not available for the account/model, fallback to standard JSON generation.
+    # Probeer eerst de Responses API met web search. Als dat niet beschikbaar is, valt de app terug op JSON-generatie zonder web search.
     try:
         response = client.responses.create(
             model=model,
@@ -251,7 +279,11 @@ def generate_with_openai(prompt: str) -> Dict[str, Any]:
                 ],
                 response_format={"type": "json_object"},
             )
-            return extract_json(chat.choices[0].message.content or "{}")
+            data = extract_json(chat.choices[0].message.content or "{}")
+            data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
+                "Webonderzoek is niet gebruikt; fallback naar standaard AI-generatie."
+            )
+            return data
         except Exception as second_error:
             raise RuntimeError(f"AI-generatie mislukt. Eerste fout: {first_error}. Tweede fout: {second_error}")
 
@@ -302,7 +334,8 @@ def editable_list(label: str, values: List[str], key: str, max_items: int = 6) -
     st.markdown(f"**{label}**")
     result = []
     values = values or []
-    for i in range(max(max_items, len(values))):
+    rows = max(max_items, len(values))
+    for i in range(rows):
         default = values[i] if i < len(values) else ""
         val = st.text_input(f"{label} {i+1}", value=default, key=f"{key}_{i}", label_visibility="collapsed")
         if val.strip():
@@ -310,25 +343,47 @@ def editable_list(label: str, values: List[str], key: str, max_items: int = 6) -
     return result
 
 
+def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    data.setdefault("basisgegevens", {})
+    data.setdefault("functieprofiel", {})
+    data.setdefault("kandidaatprofiel", {})
+    data.setdefault("voorwaarden", {})
+    data.setdefault("doelgroepanalyse", {})
+    data.setdefault("sourcingplan", {})
+    data.setdefault("concurrentenanalyse", {})
+    data.setdefault("afspraken", [])
+    data.setdefault("kwaliteitscontrole", {"ontbrekende_informatie": [], "aannames": [], "waarschuwingen": []})
+    return data
+
+
 st.title("📄 Startdocument Generator")
-st.caption("Upload of plak vacature- en intake-informatie. De tool maakt een ingevuld Cooble startdocument.")
+st.caption("Upload de vacature en intake. De AI maakt een analyse, jij controleert de preview en downloadt daarna het startdocument.")
 
 with st.sidebar:
-    st.header("Instellingen")
+    st.header("Status")
     mode = st.radio("Modus", ["AI-generatie", "Testmodus zonder API-key"], index=0)
-    st.caption("Gebruik testmodus om te controleren of de app en PowerPoint-export werken.")
+    st.caption("Testmodus gebruikt voorbeelddata en controleert of de app en PowerPoint-export werken.")
+    if st.secrets.get("OPENAI_API_KEY", ""):
+        st.success("API-key gevonden")
+    else:
+        st.warning("Geen API-key gevonden")
 
 st.subheader("1. Input")
 col1, col2 = st.columns(2)
 with col1:
+    st.markdown("**Vacature**")
     vacature_file = st.file_uploader("Vacature uploaden", type=["docx", "pdf", "txt"], key="vac_file")
     vacature_paste = st.text_area("Of plak vacaturetekst", height=240)
 with col2:
+    st.markdown("**Intake**")
     intake_file = st.file_uploader("Intake uploaden", type=["docx", "pdf", "txt"], key="intake_file")
     intake_paste = st.text_area("Of plak intake-notities", height=240)
 
-linkedin_notes = st.text_area("LinkedIn / doelgroep-notities (optioneel)", height=110)
-extra_notes = st.text_area("Extra opmerkingen (optioneel)", height=90)
+c1, c2 = st.columns([1, 2])
+with c1:
+    linkedin_size = st.text_input("Doelgroepgrootte gevonden op LinkedIn", placeholder="bijv. ± 500")
+with c2:
+    extra_notes = st.text_area("Extra opmerkingen", placeholder="bijv. salaris niet benoemen / extra compact schrijven / regio belangrijk", height=80)
 
 if "data" not in st.session_state:
     st.session_state.data = None
@@ -342,19 +397,26 @@ if st.button("Genereer analyse", type="primary"):
         elif mode == "AI-generatie" and not intake_text:
             st.error("Voeg minimaal intake-informatie toe.")
         else:
-            with st.spinner("Analyse wordt gemaakt..."):
+            with st.status("Analyse wordt gemaakt...", expanded=True) as status:
+                st.write("Vacature en intake uitlezen")
                 if mode == "Testmodus zonder API-key":
+                    st.write("Testdata laden")
                     data = demo_data()
                 else:
-                    prompt = build_prompt(vacature_text, intake_text, linkedin_notes, extra_notes)
+                    st.write("AI-analyse starten")
+                    prompt = build_prompt(vacature_text, intake_text, linkedin_size, extra_notes)
                     data = generate_with_openai(prompt)
+                data = ensure_core_keys(data)
+                if linkedin_size.strip():
+                    data.setdefault("doelgroepanalyse", {})["verwachte_doelgroepgrootte"] = linkedin_size.strip()
                 st.session_state.data = data
+                status.update(label="Analyse klaar", state="complete", expanded=False)
             st.success("Analyse klaar. Controleer en pas eventueel aan.")
     except Exception as e:
         st.exception(e)
 
 if st.session_state.data:
-    data = st.session_state.data
+    data = ensure_core_keys(st.session_state.data)
     st.subheader("2. Preview & aanpassen")
     tabs = st.tabs(["Basis", "Functie", "Doelgroep", "Sourcing", "Afspraken", "Controle"])
 
@@ -411,11 +473,21 @@ if st.session_state.data:
         with st.expander("Volledige JSON bekijken"):
             st.json(data)
 
+    st.session_state.data = data
+
     st.subheader("3. PowerPoint downloaden")
     try:
         pptx_bytes = generate_pptx(data)
-        filename = f"Startdocument_{get_nested(data, 'basisgegevens.klantnaam', 'klant')}_{get_nested(data, 'basisgegevens.vacaturenaam', 'vacature')}.pptx"
+        klant = get_nested(data, "basisgegevens.klantnaam", "klant") or "klant"
+        vacature = get_nested(data, "basisgegevens.vacaturenaam", "vacature") or "vacature"
+        filename = f"Startdocument_{klant}_{vacature}.pptx"
         filename = re.sub(r"[^A-Za-z0-9_\-\.]+", "_", filename)
-        st.download_button("Download Startdocument PowerPoint", pptx_bytes, filename, mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", type="primary")
+        st.download_button(
+            "Download Startdocument PowerPoint",
+            pptx_bytes,
+            filename,
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type="primary",
+        )
     except Exception as e:
         st.exception(e)
