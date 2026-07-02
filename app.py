@@ -348,10 +348,13 @@ def presentation_bullets(items: List[str], max_items: int = 3) -> List[str]:
 
 
 def presentation_summary(text: str) -> str:
-    """Intake-samenvatting hoort één mooie lopende tekst te zijn, geen bullets."""
+    """Intake-samenvatting hoort één mooie lopende tekst te zijn, geen bullets en compact genoeg voor de slide."""
     text = strip_bullet_markers(text)
-    # Haal dubbele spaties en rare bullet-restanten weg.
     text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    # De intake-dia heeft beperkte ruimte. Houd de tekst concreet, maar maximaal circa 115 woorden.
+    if len(words) > 115:
+        text = " ".join(words[:115]).rstrip(" ,;") + "."
     return text
 
 def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: str, vacature_text: str = "", extra_notes: str = "") -> Dict[str, Any]:
@@ -565,23 +568,29 @@ BODY_COLOR = RGBColor(0, 0, 0)
 ACCENT_BLUE = "#005B99"
 
 TEXT_STYLES = {
-    "slide_title": {"size": 46, "bold": True, "color": DARK_BLUE},
-    "big_title": {"size": 88, "bold": True, "color": DARK_BLUE},
-    "date": {"size": 32, "bold": False, "color": BODY_COLOR},
-    "customer": {"size": 30, "bold": False, "color": BODY_COLOR},
-    "intake": {"size": 24, "bold": False, "color": BODY_COLOR},
-    "body": {"size": 18, "bold": False, "color": BODY_COLOR},
-    "body_small": {"size": 17, "bold": False, "color": BODY_COLOR},
-    "heading": {"size": 38, "bold": True, "color": DARK_BLUE},
-    "subheading": {"size": 22, "bold": True, "color": DARK_BLUE},
-    "metric": {"size": 96, "bold": True, "color": BODY_COLOR},
-    "percentage": {"size": 25, "bold": True, "color": BODY_COLOR},
+    # Cooble-template stijl. Groottes zijn in pt en afgestemd op de originele template.
+    "cover_title": {"size": 104, "bold": True, "color": DARK_BLUE},
+    "cover_footer": {"size": 28, "bold": True, "color": DARK_BLUE},
+    "slide_title": {"size": 54, "bold": True, "color": DARK_BLUE},
+    "big_title": {"size": 76, "bold": True, "color": DARK_BLUE},
+    "date": {"size": 26, "bold": False, "color": BODY_COLOR},
+    "customer": {"size": 24, "bold": False, "color": BODY_COLOR},
+    "intake": {"size": 21, "bold": False, "color": BODY_COLOR},
+    "body": {"size": 17, "bold": False, "color": BODY_COLOR},
+    "body_small": {"size": 15, "bold": False, "color": BODY_COLOR},
+    "candidate_bullet": {"size": 14, "bold": False, "color": BODY_COLOR},
+    "heading": {"size": 34, "bold": True, "color": DARK_BLUE},
+    "subtitle": {"size": 26, "bold": True, "color": DARK_BLUE},
+    "section_heading": {"size": 19, "bold": True, "color": DARK_BLUE},
+    "small_heading": {"size": 17, "bold": True, "color": DARK_BLUE},
+    "metric": {"size": 88, "bold": True, "color": BODY_COLOR},
+    "percentage": {"size": 24, "bold": True, "color": BODY_COLOR},
 }
 
 BULLET_PLACEHOLDERS = {
     "{{taken_verantwoordelijkheden}}": ("functieprofiel.taken_verantwoordelijkheden", "body_small"),
-    "{{eisen}}": ("kandidaatprofiel.eisen", "body"),
-    "{{voorkeuren}}": ("kandidaatprofiel.voorkeuren", "body"),
+    "{{eisen}}": ("kandidaatprofiel.eisen", "candidate_bullet"),
+    "{{voorkeuren}}": ("kandidaatprofiel.voorkeuren", "candidate_bullet"),
     "{{usp_functie}}": ("functieprofiel.usp_functie", "body"),
     "{{no_go_sourcing}}": ("kandidaatprofiel.no_go_sourcing", "body"),
     "{{pullfactoren}}": ("doelgroepanalyse.pullfactoren", "body"),
@@ -633,6 +642,8 @@ def clear_tf(tf) -> None:
     # marges iets rustiger zoals PowerPoint-template
     tf.margin_left = Emu(0)
     tf.margin_right = Emu(0)
+    tf.margin_top = Emu(0)
+    tf.margin_bottom = Emu(0)
 
 
 def font_size_for_text(style_name: str, text: str, lines: int = 1) -> int:
@@ -640,20 +651,25 @@ def font_size_for_text(style_name: str, text: str, lines: int = 1) -> int:
     words = len(str(text).split())
     chars = len(str(text))
     if style_name == "intake":
-        if words > 135 or chars > 900:
+        # Intake moet compact blijven zodat titel en subtitel vrij blijven.
+        if words > 145 or chars > 920:
+            return 16
+        if words > 120 or chars > 760:
             return 18
-        if words > 115 or chars > 760:
-            return 20
         if words > 95 or chars > 620:
-            return 22
-        return 24
+            return 19
+        return base
+    if style_name == "candidate_bullet":
+        if lines >= 3 or chars > 210:
+            return 12
+        return base
     if style_name in {"body", "body_small"}:
         if lines >= 7 or chars > 520:
-            return 17
+            return 14 if style_name == "body_small" else 15
         if lines >= 5 or chars > 380:
-            return 18
+            return 15 if style_name == "body_small" else 16
         if chars > 260:
-            return 19
+            return 16
     return base
 
 
@@ -692,7 +708,7 @@ def set_bullet_list(shape, items: List[str], style_name: str = "body") -> None:
         p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
         p.text = ""
         p.level = 0
-        p.space_after = Pt(7 if len(clean) <= 3 else 4)
+        p.space_after = Pt(3 if style_name == "candidate_bullet" else (6 if len(clean) <= 3 else 4))
         p.space_before = Pt(0)
         # Gebruik een tekst-bullet zodat het stabiel blijft in PowerPoint en template-stijl benadert.
         run = p.add_run()
@@ -756,21 +772,17 @@ def create_age_chart_image(items: List[str]) -> BytesIO:
     ax.set_ylim(-0.6, len(labels) - 0.4)
     ax.axis("off")
 
-    accent = "#005B99"
+    accent = "#5A4BD8"  # paarse balk zoals de aangeleverde referentie
     track = "#EDEFF2"
     label_color = "#111111"
 
     for i, (label, value) in enumerate(zip(labels, values)):
         y = len(labels) - 1 - i
-        # links label
-        ax.text(-26, y, label, va="center", ha="left", fontsize=11, color=label_color)
-        # achtergrondbalk
-        ax.plot([0, 100], [y, y], color=track, linewidth=18, solid_capstyle="round")
-        # gevulde balk
+        ax.text(-26, y, label, va="center", ha="left", fontsize=10.5, color=label_color)
+        ax.plot([0, 100], [y, y], color=track, linewidth=15, solid_capstyle="round")
         if value > 0:
-            ax.plot([0, min(value, 100)], [y, y], color=accent, linewidth=18, solid_capstyle="round")
-        # percentage rechts
-        ax.text(113, y, f"{int(round(value))}%", va="center", ha="right", fontsize=12, fontweight="bold", color=label_color)
+            ax.plot([0, min(value, 100)], [y, y], color=accent, linewidth=15, solid_capstyle="round")
+        ax.text(113, y, f"{int(round(value))}%", va="center", ha="right", fontsize=11.5, fontweight="bold", color=label_color)
 
     buf = BytesIO()
     plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.03)
@@ -793,11 +805,37 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         # Tekstplaceholder leegmaken en op dezelfde dia een echte afbeelding/infographic plaatsen.
         shape.text_frame.clear()
         img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
-        # Vaste chart-zone op de leeftijdsdia, rechts onder de titel.
-        slide.shapes.add_picture(img, Emu(7900000), Emu(4850000), width=Emu(7200000), height=Emu(3500000))
+        # Vaste chart-zone rechts op de leeftijdsdia, gecentreerd onder de kop.
+        slide.shapes.add_picture(img, Emu(9300000), Emu(5100000), width=Emu(6900000), height=Emu(3000000))
         return
 
     stripped = original.strip()
+
+    # Vaste templatekoppen opnieuw stylen volgens Cooble-template.
+    upper = stripped.upper().replace("\n", " ").strip()
+    if upper == "START DOCUMENT":
+        set_plain_text(shape, "START\nDOCUMENT", "cover_title")
+        return
+    if upper == "INTAKE":
+        set_plain_text(shape, "INTAKE", "big_title")
+        return
+    if upper in {"TAKEN & VERANTWOORDELIJKHEDEN", "EISEN", "VOORKEUREN", "USP'S VAN DE FUNCTIE", "NO GO SOURCING", "BELANGRIJKSTE PULLFACTOREN", "BELANGRIJKSTE ARBEIDSVOORWAARDEN", "GESLACHT", "LEEFTIJDSVERDELING (IN JAREN)"}:
+        set_plain_text(shape, stripped, "small_heading" if len(stripped) > 24 else "section_heading")
+        return
+    if upper in {"KANDIDAAT", "AFSPRAKEN", "HET PROCES VAN COOBLE", "DOELGROEP ANALYSE"}:
+        set_plain_text(shape, stripped, "slide_title")
+        return
+
+    # Op de eerste slide staat {{klantnaam}} onderin; daar wil je de vacaturetitel zien.
+    if stripped == "{{klantnaam}}" and getattr(shape, "top", 0) > Emu(8000000):
+        set_plain_text(shape, str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")), "cover_footer")
+        return
+
+    # Kleine subtitel onder INTAKE; voorkom overlap met de samenvatting.
+    if stripped == "{{vacaturenaam}}" and getattr(shape, "height", 0) < Emu(900000):
+        set_plain_text(shape, str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")), "subtitle")
+        return
+
     for placeholder, (path, style) in BULLET_PLACEHOLDERS.items():
         if placeholder in stripped and stripped == placeholder:
             set_bullet_list(shape, get_nested_v12(data, path, []), style)
@@ -815,9 +853,8 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         return
 
     if "{{vacaturenaam}}" in original:
-        # Op slide 2 staat vacaturenaam als subtitel, op slide 1 mogelijk niet. Houd hem groot maar niet té groot.
         text = original.replace("{{vacaturenaam}}", str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
-        style = "slide_title" if len(text) < 45 else "heading"
+        style = "subtitle" if len(text) < 55 else "section_heading"
         set_plain_text(shape, text, style)
         return
 
@@ -825,9 +862,7 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         set_mixed_text_frame(shape, replacements, "body_small")
         return
 
-    # Bestaande vaste koppen in de template krijgen Poppins-stijl terug als de template runs leeg waren.
-    if original.strip().upper() in {"AANPAK", "AFSPRAKEN", "DOELGROEP ANALYSE", "DOELGROEP\nANALYSE"}:
-        set_plain_text(shape, original, "big_title")
+    # Vaste koppen worden bovenin al gestyled.
 
 
 
@@ -966,7 +1001,7 @@ Belangrijke regels:
 - Datum: laat leeg of gebruik vandaag; de app overschrijft dit altijd met de generatiedatum.
 - No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen. Laat geen enkel bedrijf weg.
 - Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
-- Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
+- Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek extern/arbeidsmarktgericht welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items. Combineer nooit meerdere onderwerpen in één bullet.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
@@ -1105,7 +1140,7 @@ Onderzoek de doelgroep voor deze vacature en geef concrete, niet-generieke onder
 
 Belangrijke regels:
 - Pullfactoren zijn extern: baseer ze op doelgroep/arbeidsmarkt, NIET op de vacaturetekst.
-- Arbeidsvoorwaarden zijn extern: doe internetonderzoek naar wat deze doelgroep belangrijk vindt. Negeer arbeidsvoorwaarden uit vacature/intake voor dit veld, behalve als extra opmerkingen iets expliciet verplichten. Gebruik generieke labels, geen concrete waarden uit de vacature.
+- Arbeidsvoorwaarden zijn extern: doe internetonderzoek naar wat deze doelgroep belangrijk vindt. Gebruik de vacaturetekst of intake NIET als bron voor dit veld, behalve als extra opmerkingen iets expliciet verplichten. Gebruik generieke arbeidsmarktlabels, geen concrete waarden uit de vacature.
 - Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
 - Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1, Organisatie X.
 - Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
