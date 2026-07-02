@@ -14,7 +14,7 @@ from pypdf import PdfReader
 
 APP_TITLE = "Startdocument Generator"
 TEMPLATE_PATH = Path("templates/Startdocument_Cooble_template.pptx")
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-4.1"
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 
@@ -81,6 +81,100 @@ def split_one_topic_per_bullet(items: List[str]) -> List[str]:
             if part and part not in result:
                 result.append(part)
     return result
+
+
+
+
+def first_nonempty_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and len(line) < 90:
+            return line
+    return ""
+
+
+def extract_basis_fallback(vacature_text: str, intake_text: str) -> Dict[str, str]:
+    """Deterministische fallback voor klantnaam, vacaturenaam en salaris uit input."""
+    combined = f"{intake_text}\n{vacature_text}"
+    fallback: Dict[str, str] = {}
+
+    # Klantnaam uit intakevelden of herkenbare vacaturetekst.
+    m = re.search(r"(?im)^\s*Klant\s*:\s*(.+)$", combined)
+    if m:
+        fallback["klantnaam"] = m.group(1).strip()
+    else:
+        m = re.search(r"(?i)\bWij zijn\s+([A-Z][A-Za-z0-9&+ .'-]{2,40})", vacature_text)
+        if m:
+            name = re.split(r"[\n\.;,]", m.group(1).strip())[0].strip()
+            fallback["klantnaam"] = name
+
+    # Vacaturenaam uit intakeveld; als leeg, eerste regel vacaturetekst.
+    m = re.search(r"(?im)^\s*Vacature\s*:\s*(.+)$", combined)
+    if m and m.group(1).strip():
+        fallback["vacaturenaam"] = m.group(1).strip()
+    else:
+        title = first_nonempty_line(vacature_text)
+        # Vermijd plaats/metadata als titel.
+        if title and not re.search(r"\b(remote|hybrid|nl|ov|sp|locatie)\b", title, re.I):
+            fallback["vacaturenaam"] = title
+
+    # Salaris: euro-range, salarisschaal/schaal of expliciete salarisregel.
+    salary_patterns = [
+        r"(?i)(?:salaris(?:range)?|salarisindicatie)\s*[:\-]?\s*([^\n]{3,80})",
+        r"(?i)\b(schaal\s*[0-9][0-9A-Za-z/\- ]{0,30})",
+        r"(?i)(€\s?[\d\.,]+\s*(?:-|–|tot)\s*€?\s?[\d\.,]+)",
+        r"(?i)([\d\.,]+\s*(?:-|–|tot)\s*[\d\.,]+\s*(?:euro|bruto|per maand)?)",
+    ]
+    for pat in salary_patterns:
+        m = re.search(pat, combined)
+        if m:
+            val = m.group(1).strip(" .;,")
+            if val and not re.search(r"weten we niet|onbekend", val, re.I):
+                fallback["salaris"] = val
+                break
+            # Als er staat: salaris weten we niet, schaal 8/9/10, pak alsnog schaal.
+            scale = re.search(r"(?i)\b(schaal\s*[0-9][0-9A-Za-z/\- ]{0,30})", m.group(0))
+            if scale:
+                fallback["salaris"] = scale.group(1).strip()
+                break
+    return fallback
+
+
+def is_empty_or_placeholder(value: str) -> bool:
+    value = str(value or "").strip()
+    return value == "" or value.lower() in {"onbekend", "n.v.t.", "nvt", "in overleg", "-", "..."}
+
+
+def is_placeholder_company(value: str) -> bool:
+    return bool(re.search(r"(?i)^bedrijf\s+[a-z0-9]$|^concurrent\s+[a-z0-9]$|^organisatie\s+[a-z0-9]$", str(value or "").strip()))
+
+
+def infer_competitors_offline(vacature_text: str, intake_text: str, current: List[str]) -> List[str]:
+    """Fallback wanneer de AI placeholders geeft. Beperkt, maar beter dan Bedrijf A/B/C."""
+    text = f"{vacature_text}\n{intake_text}".lower()
+    companies = []
+    # Bedrijven die expliciet in intake staan, mogen ook als concurrent/check-eerst zichtbaar worden.
+    companies.extend(extract_no_go_companies_from_intake(intake_text))
+    maps = [
+        (["waterkwaliteit", "afvalwater", "waterwet", "waterschap", "watermanagement"], ["Witteveen+Bos", "Royal HaskoningDHV", "Sweco", "Antea Group", "Arcadis", "TAUW"]),
+        (["luchtkwaliteit", "milieuconsultant", "emissie", "vergunning", "omgevingswet"], ["Royal HaskoningDHV", "Witteveen+Bos", "Sweco", "Antea Group", "Arcadis", "TAUW"]),
+        (["business analist", "informatieanalist", "product owner"], ["Sogeti", "Capgemini", "Ordina", "CGI", "Conclusion", "Atos"]),
+        (["lead engineer", "engineer", "warmtenet", "ondergrondse infra"], ["BAM", "Heijmans", "VolkerWessels", "Strukton", "Equans", "SPIE"]),
+        (["accountmanager", "retentie", "upsell", "sales manager"], ["LeasePlan", "Alphabet", "Arval", "Athlon", "ALD Automotive"]),
+    ]
+    for keywords, names in maps:
+        if any(k in text for k in keywords):
+            companies.extend(names)
+            break
+    for item in current or []:
+        if item and not is_placeholder_company(item):
+            companies.append(item)
+    result = []
+    for c in companies:
+        c = clean_company_name(c)
+        if c and not is_placeholder_company(c) and c not in result:
+            result.append(c)
+    return result[:8]
 
 
 def normalize_condition_label(text: str) -> str:
@@ -199,10 +293,17 @@ def extract_no_go_companies_from_intake(intake_text: str) -> List[str]:
     return result
 
 
-def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: str) -> Dict[str, Any]:
+def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: str, vacature_text: str = "", extra_notes: str = "") -> Dict[str, Any]:
     """Harde sprint-0.4 regels die altijd gelden, ook na AI-generatie."""
     data = ensure_core_keys(data)
-    data.setdefault("basisgegevens", {})["datum"] = date.today().strftime("%d-%m-%Y")
+    b = data.setdefault("basisgegevens", {})
+    b["datum"] = date.today().strftime("%d-%m-%Y")
+
+    # Vul klantnaam, vacaturenaam en salaris deterministisch aan als AI ze mist.
+    fallback = extract_basis_fallback(vacature_text, intake_text)
+    for field in ["klantnaam", "vacaturenaam", "salaris"]:
+        if is_empty_or_placeholder(b.get(field, "")) and fallback.get(field):
+            b[field] = fallback[field]
 
     if linkedin_size.strip():
         data.setdefault("doelgroepanalyse", {})["verwachte_doelgroepgrootte"] = linkedin_size.strip()
@@ -225,6 +326,15 @@ def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: 
 
     v = data.setdefault("voorwaarden", {})
     v["belangrijkste_arbeidsvoorwaarden"] = normalize_conditions(v.get("belangrijkste_arbeidsvoorwaarden", []))
+
+    # Concurrenten mogen nooit placeholders zijn. Altijd bedrijfsnamen.
+    c = data.setdefault("concurrentenanalyse", {})
+    current_companies = [clean_company_name(x) for x in clean_list(c.get("bedrijven", []))]
+    current_companies = [x for x in current_companies if x and not is_placeholder_company(x)]
+    if not current_companies:
+        current_companies = infer_competitors_offline(vacature_text, intake_text, current_companies)
+    c["bedrijven"] = current_companies
+    c["relevant"] = True
     return data
 
 
@@ -381,19 +491,26 @@ Belangrijke regels:
 - Output is Nederlands.
 - Eén intake = één vacature.
 - Formuleer kort en bondig, PowerPoint-stijl.
-- Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
+- Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau. Gebruik echte bedrijfsnamen. Nooit placeholders zoals Bedrijf A, Bedrijf B of Concurrent 1.
 - Vrij formuleren mag, maar niet fantaseren.
 - Datum: laat leeg of gebruik vandaag; de app overschrijft dit altijd met de generatiedatum.
-- No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen.
+- No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen. Laat geen enkel bedrijf weg.
 - Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
 - Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
 - Eén bullet = één onderwerp. Combineer nooit meerdere onderwerpen in één bullet.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
-- Houd lijsten kort: meestal precies 3 bullets.
+- Houd lijsten kort: meestal precies 3 bullets, behalve no-go sourcing en concurrenten; die mogen meer bedrijven bevatten.
 - Gebruik zelfverzekerde labels zoals "Hybride werken", niet "waarschijnlijk hybride werken".
 - Leeftijdsverdeling: geef categorie én percentage, bijvoorbeeld "25-34: 30%".
 - Als doelgroepgrootte uit LinkedIn is ingevuld, gebruik die waarde letterlijk.
+- Klantnaam en vacaturenaam moeten altijd gevuld zijn. Haal klantnaam uit intake/vacaturetekst. Haal vacaturenaam uit intake/vacaturetitel.
+- Salaris: als er een schaal of salarisrange in intake/vacature staat, neem die concreet over. Gebruik niet "in overleg" als er schalen of bedragen staan.
+- Intake_samenvatting: schrijf concreet en iets uitgebreider. Dit veld moet in één dia duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, wat juist niet past en nadruk uit de intake. Richtlijn: 70-120 woorden.
+- Taken & verantwoordelijkheden: vermijd generieke bullets. Benoem de inhoudelijke context, doelgroep/klanttype, projecten of domein.
+- Eisen: vermijd "relevante ervaring". Schrijf ervaring waarmee, bijvoorbeeld "ervaring met industriële waterprojecten".
+- Doelgroep: zeer concreet. Gebruik vacaturetitel, domein, senioriteit, sector en relevante achtergrond. Nooit generiek zoals "kandidaten met relevante advieservaring".
+- Concurrenten: doe internetonderzoek en geef echte bedrijven waar deze doelgroep werkt of vandaan kan komen.
 
 {schema_hint()}
 
@@ -577,7 +694,7 @@ if st.button("Genereer analyse", type="primary"):
                     st.write("AI-analyse starten")
                     prompt = build_prompt(vacature_text, intake_text, linkedin_size, extra_notes)
                     data = generate_with_openai(prompt)
-                data = apply_business_rules(data, intake_text + "\n" + extra_notes, linkedin_size)
+                data = apply_business_rules(data, intake_text + "\n" + extra_notes, linkedin_size, vacature_text, extra_notes)
                 st.session_state.data = data
                 status.update(label="Analyse klaar", state="complete", expanded=False)
             st.success("Analyse klaar. Controleer en pas eventueel aan.")

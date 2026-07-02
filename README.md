@@ -1,36 +1,16 @@
-# Startdocument Generator v0.4
+# Startdocument Generator v0.5
 
-Online Streamlit-app voor het genereren van een Cooble startdocument.
+Wijzigingen in v0.5:
+- Klantnaam en vacaturenaam worden altijd aangevuld uit vacature/intake als AI ze mist.
+- Salaris pakt nu ook schalen of ranges uit intake/vacature en zet niet zomaar 'in overleg'.
+- Intake-samenvatting is concreter en uitgebreider volgens startdocument-doel.
+- Taken, eisen en doelgroep zijn aangescherpt: minder generiek, meer functie/domeinspecifiek.
+- Concurrentenanalyse mag geen placeholders meer bevatten zoals Bedrijf A/B/C.
+- Fallback voor concurrenten toegevoegd als webonderzoek geen namen oplevert.
+- No-go sourcing blijft: alleen bedrijven en zo volledig mogelijk uit intake.
+- Datum blijft altijd de generatiedatum.
 
-## Nieuw in v0.4
-
-- Datum wordt altijd automatisch gezet op de generatiedatum van vandaag.
-- No-go sourcing toont alleen bedrijfsnamen.
-- No-go sourcing wordt aangevuld vanuit intake-notities, zodat losse bedrijfsnamen in een no-go/check-eerst blok niet wegvallen.
-- Belangrijkste arbeidsvoorwaarden worden generiek gemaakt, bijvoorbeeld `Vakantiedagen` in plaats van `29 vakantiedagen`.
-- Eén bullet = één onderwerp. Samengestelde bullets worden waar mogelijk opgesplitst.
-- Leeftijdsverdeling bevat categorieën én percentages.
-- Slide-template heeft nu ook een placeholder voor leeftijdsverdeling.
-
-## Deployen
-
-1. Pak de zip uit.
-2. Upload/vervang alle bestanden in je GitHub-repository.
-3. Commit changes.
-4. Streamlit redeployt automatisch.
-5. Controleer in Streamlit Secrets dat dit aanwezig is:
-
-```toml
-OPENAI_API_KEY = "jouw-nieuwe-api-key"
-```
-
-## Bestanden
-
-- `app.py` — hoofdapplicatie
-- `requirements.txt` — Python packages
-- `templates/Startdocument_Cooble_template.pptx` — vaste PowerPoint-template
-
-## Testen
-
-Start eerst met **Testmodus zonder API-key** om te controleren of preview en PowerPoint-export werken.
-Daarna kun je **AI-generatie** gebruiken met een echte vacature en intake.
+Deploy:
+1. Upload/vervang alle bestanden in je GitHub repo.
+2. Streamlit redeployt automatisch.
+3. Controleer Secrets: OPENAI_API_KEY = "..."
