@@ -507,6 +507,7 @@ def clear_unreplaced_placeholders(shape) -> None:
 def generate_pptx(data: Dict[str, Any]) -> bytes:
     template_path = get_template_path()
     prs = Presentation(str(template_path))
+    delete_slides_by_exact_title(prs, {"AANPAK"})
     afspraken = data.get("afspraken") or []
     concurrenten = get_nested(data, "concurrentenanalyse.bedrijven", [])
     concurrenten_text = bullets(concurrenten) or get_nested(data, "concurrentenanalyse.toelichting", "")
@@ -564,15 +565,15 @@ BODY_COLOR = RGBColor(0, 0, 0)
 ACCENT_BLUE = "#005B99"
 
 TEXT_STYLES = {
-    "slide_title": {"size": 54, "bold": True, "color": DARK_BLUE},
-    "big_title": {"size": 96, "bold": True, "color": DARK_BLUE},
+    "slide_title": {"size": 46, "bold": True, "color": DARK_BLUE},
+    "big_title": {"size": 88, "bold": True, "color": DARK_BLUE},
     "date": {"size": 32, "bold": False, "color": BODY_COLOR},
     "customer": {"size": 30, "bold": False, "color": BODY_COLOR},
     "intake": {"size": 24, "bold": False, "color": BODY_COLOR},
-    "body": {"size": 21, "bold": False, "color": BODY_COLOR},
-    "body_small": {"size": 20, "bold": False, "color": BODY_COLOR},
-    "heading": {"size": 45, "bold": True, "color": DARK_BLUE},
-    "subheading": {"size": 26, "bold": True, "color": DARK_BLUE},
+    "body": {"size": 18, "bold": False, "color": BODY_COLOR},
+    "body_small": {"size": 17, "bold": False, "color": BODY_COLOR},
+    "heading": {"size": 38, "bold": True, "color": DARK_BLUE},
+    "subheading": {"size": 22, "bold": True, "color": DARK_BLUE},
     "metric": {"size": 96, "bold": True, "color": BODY_COLOR},
     "percentage": {"size": 25, "bold": True, "color": BODY_COLOR},
 }
@@ -741,30 +742,41 @@ def parse_age_items(items: List[str]) -> tuple[list[str], list[float]]:
 
 
 def create_age_chart_image(items: List[str]) -> BytesIO:
+    """Maakt leeftijdsverdeling als horizontale balken, zoals de aangeleverde referentie."""
     import matplotlib.pyplot as plt
     labels, values = parse_age_items(items)
-    colors = ["#005B99", "#0077C8", "#6CB6E8", "#A6CBE7", "#DCECF7"]
-    fig, ax = plt.subplots(figsize=(5.2, 2.8), dpi=180)
+    # Standaardiseer de categorieën iets compacter voor de slide.
+    labels = [str(x).replace(" ", "") for x in labels]
+    max_value = max(max(values), 100)
+
+    fig, ax = plt.subplots(figsize=(5.8, 3.0), dpi=180)
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
-    wedges, texts, autotexts = ax.pie(
-        values,
-        colors=colors[:len(values)],
-        startangle=90,
-        counterclock=False,
-        wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 1},
-        autopct=lambda pct: f"{pct:.0f}%" if pct >= 4 else "",
-        pctdistance=0.78,
-        textprops={"fontsize": 8, "color": "white", "fontweight": "bold"},
-    )
-    ax.legend(wedges, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8)
-    ax.set(aspect="equal")
+    ax.set_xlim(-28, 118)
+    ax.set_ylim(-0.6, len(labels) - 0.4)
+    ax.axis("off")
+
+    accent = "#005B99"
+    track = "#EDEFF2"
+    label_color = "#111111"
+
+    for i, (label, value) in enumerate(zip(labels, values)):
+        y = len(labels) - 1 - i
+        # links label
+        ax.text(-26, y, label, va="center", ha="left", fontsize=11, color=label_color)
+        # achtergrondbalk
+        ax.plot([0, 100], [y, y], color=track, linewidth=18, solid_capstyle="round")
+        # gevulde balk
+        if value > 0:
+            ax.plot([0, min(value, 100)], [y, y], color=accent, linewidth=18, solid_capstyle="round")
+        # percentage rechts
+        ax.text(113, y, f"{int(round(value))}%", va="center", ha="right", fontsize=12, fontweight="bold", color=label_color)
+
     buf = BytesIO()
-    plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.04)
+    plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     buf.seek(0)
     return buf
-
 
 def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
     if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
@@ -782,7 +794,7 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         shape.text_frame.clear()
         img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
         # Vaste chart-zone op de leeftijdsdia, rechts onder de titel.
-        slide.shapes.add_picture(img, Emu(8600000), Emu(5350000), width=Emu(6200000), height=Emu(3100000))
+        slide.shapes.add_picture(img, Emu(7900000), Emu(4850000), width=Emu(7200000), height=Emu(3500000))
         return
 
     stripped = original.strip()
@@ -796,9 +808,9 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
             set_plain_text(shape, get_nested_v12(data, path, ""), style)
             return
 
-    # Speciale titel met vacature/doelgroep.
+    # Speciale titel: geen "DOELGROEP:" meer, alleen de concrete vacature/doelgroep.
     if "{{doelgroep_titel}}" in original:
-        text = original.replace("{{doelgroep_titel}}", str(get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
+        text = str(get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", ""))
         set_plain_text(shape, text, "slide_title")
         return
 
@@ -818,10 +830,29 @@ def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         set_plain_text(shape, original, "big_title")
 
 
+
+def delete_slides_by_exact_title(prs, titles: set[str]) -> None:
+    """Verwijdert slides uit de Cooble-template, bijvoorbeeld de oude AANPAK-slide."""
+    slides_to_delete = []
+    for idx, slide in enumerate(prs.slides):
+        texts = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                texts.append(shape.text.strip().upper())
+        if any(t in titles for t in texts):
+            slides_to_delete.append(idx)
+    # python-pptx heeft geen publieke delete API; dit is de gebruikelijke XML-route.
+    sld_id_lst = prs.slides._sldIdLst  # noqa: SLF001
+    for idx in sorted(slides_to_delete, reverse=True):
+        r_id = sld_id_lst[idx].rId
+        prs.part.drop_rel(r_id)
+        del sld_id_lst[idx]
+
 def generate_pptx(data: Dict[str, Any]) -> bytes:
-    """v1.2: PowerPoint-renderer met template-styling, Poppins-fonts en leeftijdsverdeling als afbeelding."""
+    """v1.3: Cooble-template behouden, AANPAK-slide verwijderd en betere PowerPoint-rendering."""
     template_path = get_template_path()
     prs = Presentation(str(template_path))
+    delete_slides_by_exact_title(prs, {"AANPAK"})
     afspraken = data.get("afspraken") or []
     concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
     concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
@@ -1074,7 +1105,7 @@ Onderzoek de doelgroep voor deze vacature en geef concrete, niet-generieke onder
 
 Belangrijke regels:
 - Pullfactoren zijn extern: baseer ze op doelgroep/arbeidsmarkt, NIET op de vacaturetekst.
-- Arbeidsvoorwaarden zijn extern: bepaal welke categorieën deze doelgroep belangrijk vindt. Gebruik generieke labels, geen concrete waarden uit de vacature.
+- Arbeidsvoorwaarden zijn extern: doe internetonderzoek naar wat deze doelgroep belangrijk vindt. Negeer arbeidsvoorwaarden uit vacature/intake voor dit veld, behalve als extra opmerkingen iets expliciet verplichten. Gebruik generieke labels, geen concrete waarden uit de vacature.
 - Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
 - Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1, Organisatie X.
 - Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
@@ -1124,7 +1155,7 @@ Strenge schrijfrichtlijnen:
 - Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
 - Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
-- Arbeidsvoorwaarden: extern en arbeidsmarktgericht. Generieke labels, geen concrete waarden uit vacaturetekst.
+- Arbeidsvoorwaarden: extern en arbeidsmarktgericht vanuit internetonderzoek/research. Niet uit vacaturetekst of intake overnemen. Generieke labels, geen concrete waarden uit vacaturetekst.
 - Concurrenten: echte bedrijfsnamen op bedrijfsniveau.
 - No-go sourcing: uitsluitend bedrijfsnamen uit feitenextractie. Niets toevoegen, niets weglaten.
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
