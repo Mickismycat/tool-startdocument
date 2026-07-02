@@ -14,7 +14,23 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
 APP_TITLE = "Startdocument Generator"
-TEMPLATE_PATH = Path("templates/Startdocument_Cooble_template.pptx")
+APP_DIR = Path(__file__).resolve().parent
+TEMPLATE_CANDIDATES = [
+    APP_DIR / "templates" / "Startdocument_Cooble_template.pptx",
+    APP_DIR / "Startdocument_Cooble_template.pptx",
+    Path("templates/Startdocument_Cooble_template.pptx"),
+    Path("Startdocument_Cooble_template.pptx"),
+]
+
+def get_template_path() -> Path:
+    for candidate in TEMPLATE_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    checked = ", ".join(str(c) for c in TEMPLATE_CANDIDATES)
+    raise RuntimeError(
+        "PowerPoint-template niet gevonden. Controleer of 'Startdocument_Cooble_template.pptx' "
+        "in de map 'templates' staat of in de hoofdmap van de repository. Gecheckte paden: " + checked
+    )
 DEFAULT_MODEL = "gpt-4.1"
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
@@ -487,10 +503,8 @@ def clear_unreplaced_placeholders(shape) -> None:
 
 
 def generate_pptx(data: Dict[str, Any]) -> bytes:
-    if not TEMPLATE_PATH.exists():
-        raise RuntimeError(f"Template niet gevonden: {TEMPLATE_PATH}")
-
-    prs = Presentation(str(TEMPLATE_PATH))
+    template_path = get_template_path()
+    prs = Presentation(str(template_path))
     afspraken = data.get("afspraken") or []
     concurrenten = get_nested(data, "concurrentenanalyse.bedrijven", [])
     concurrenten_text = bullets(concurrenten) or get_nested(data, "concurrentenanalyse.toelichting", "")
@@ -1162,7 +1176,7 @@ if st.button("Genereer analyse", type="primary"):
 if st.session_state.data:
     data = ensure_core_keys(st.session_state.data)
     st.subheader("2. Preview & aanpassen")
-    tabs = st.tabs(["Basis", "Functie", "Doelgroep", "Sourcing", "Afspraken", "Controle"])
+    tabs = st.tabs(["Basis", "Functie", "Doelgroep", "Sourcing", "Afspraken"])
 
     with tabs[0]:
         b = data.setdefault("basisgegevens", {})
@@ -1212,23 +1226,9 @@ if st.session_state.data:
     with tabs[4]:
         data["afspraken"] = editable_list("Afspraken", data.get("afspraken", []), "afspraken", 5)
 
-    with tabs[5]:
-        qc = data.get("kwaliteitscontrole", {})
-        st.json(qc)
-        with st.expander("Volledige JSON bekijken"):
-            st.json(data)
-
     st.session_state.data = data
 
-    st.subheader("3. Kwaliteitscheck")
-    render_quality_check(data)
-    col_clean, col_json = st.columns([1, 3])
-    with col_clean:
-        if st.button("Regels opnieuw toepassen"):
-            st.session_state.data = apply_business_rules(st.session_state.data, "", linkedin_size)
-            st.rerun()
-
-    st.subheader("4. PowerPoint maken")
+    st.subheader("3. PowerPoint maken")
     try:
         data = apply_business_rules(data, "", linkedin_size)
         st.session_state.data = data

@@ -1,38 +1,24 @@
-# Startdocument Generator v1.0
+# Startdocument Generator v1.1
 
-Online Streamlit-app voor het genereren van een Cooble startdocument.
+Deze versie focust op PowerPoint-export en een rustigere interface.
 
-## Nieuw in v1.0
+## Aangepast in v1.1
 
-Deze sprint richt zich op het eindproduct: de PowerPoint.
+- De zichtbare kwaliteitscheck is uit de interface gehaald.
+- De PowerPoint-template wordt nu robuuster gevonden:
+  - `templates/Startdocument_Cooble_template.pptx`
+  - of `Startdocument_Cooble_template.pptx` in de hoofdmap.
+- De template zit voor de zekerheid op beide plekken in deze zip.
+- De ingevulde data/preview blijft gelijk aan v1.0.
 
-- PowerPoint-export verbeterd met een nettere presentation engine.
-- Lange tekstvakken worden automatisch iets kleiner gezet zodat tekst minder snel buiten het vak valt.
-- Ongebruikte placeholders worden vóór export leeggemaakt.
-- Bullets worden nu als echte scanbare bullets geëxporteerd.
-- `doelgroep_regio` wordt correct gevuld in de doelgroepanalyse.
-- Dubbele tekst `Kandidaat` boven voorkeuren is uit de template gehaald.
-- v0.7/v0.8 outputregels blijven behouden: intake als lopende tekst, maximaal 3 bullets en één onderwerp per bullet.
+## Streamlit Secrets
 
-## Deploy
-
-1. Pak de zip uit.
-2. Upload/vervang alle bestanden in je GitHub-repository.
-3. Streamlit Cloud redeployt automatisch.
-4. Controleer bij Streamlit Secrets:
+Zet je OpenAI-key in Streamlit Secrets:
 
 ```toml
 OPENAI_API_KEY = "jouw-api-key"
 ```
 
-Optioneel:
+## Upload naar GitHub
 
-```toml
-OPENAI_MODEL = "gpt-4.1"
-```
-
-## Bestanden
-
-- `app.py` – Streamlit-app + AI-pipeline + PowerPoint-export
-- `requirements.txt` – Python dependencies
-- `templates/Startdocument_Cooble_template.pptx` – vaste PowerPoint-template
+Upload alle bestanden en mappen uit deze zip naar je repository. Let erop dat de map `templates` mee geüpload wordt.
