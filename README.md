@@ -1,16 +1,30 @@
-# Startdocument Generator v0.5
+# Startdocument Generator v0.6
 
-Wijzigingen in v0.5:
-- Klantnaam en vacaturenaam worden altijd aangevuld uit vacature/intake als AI ze mist.
-- Salaris pakt nu ook schalen of ranges uit intake/vacature en zet niet zomaar 'in overleg'.
-- Intake-samenvatting is concreter en uitgebreider volgens startdocument-doel.
-- Taken, eisen en doelgroep zijn aangescherpt: minder generiek, meer functie/domeinspecifiek.
-- Concurrentenanalyse mag geen placeholders meer bevatten zoals Bedrijf A/B/C.
-- Fallback voor concurrenten toegevoegd als webonderzoek geen namen oplevert.
-- No-go sourcing blijft: alleen bedrijven en zo volledig mogelijk uit intake.
+Online Streamlit-app voor het genereren van een Cooble startdocument.
+
+## Nieuw in v0.6
+
+- AI-pipeline in meerdere stappen: feitenextractie → arbeidsmarktresearch → writer → kwaliteitscontrole.
+- Research-stap voor doelgroep, arbeidsvoorwaarden, pullfactoren en concurrenten.
+- Automatische controle op generieke teksten zoals “relevante ervaring”.
+- Concurrentenanalyse blijft verplicht en op bedrijfsniveau.
+- No-go sourcing blijft alleen bedrijfsnamen uit intake/extra opmerkingen.
 - Datum blijft altijd de generatiedatum.
 
-Deploy:
-1. Upload/vervang alle bestanden in je GitHub repo.
-2. Streamlit redeployt automatisch.
-3. Controleer Secrets: OPENAI_API_KEY = "..."
+## Deploy
+
+Upload alle bestanden naar GitHub. Streamlit Cloud redeployt automatisch.
+
+## Secrets
+
+Zet in Streamlit Secrets:
+
+```toml
+OPENAI_API_KEY = "jouw-api-key"
+```
+
+Optioneel:
+
+```toml
+OPENAI_MODEL = "gpt-4.1"
+```

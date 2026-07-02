@@ -542,38 +542,288 @@ def extract_json(text: str) -> Dict[str, Any]:
         raise
 
 
-def generate_with_openai(prompt: str) -> Dict[str, Any]:
+
+def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je geeft uitsluitend geldige JSON terug. Geen markdown.") -> Dict[str, Any]:
+    """Centrale OpenAI-call. Probeert Responses API met optioneel webonderzoek, valt terug op Chat Completions."""
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY ontbreekt in Streamlit Secrets.")
     client = OpenAI(api_key=api_key)
     model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
 
-    # Probeer eerst de Responses API met web search. Als dat niet beschikbaar is, valt de app terug op JSON-generatie zonder web search.
-    try:
-        response = client.responses.create(
-            model=model,
-            input=prompt,
-            tools=[{"type": "web_search_preview"}],
-        )
-        return extract_json(response.output_text)
-    except Exception as first_error:
+    if use_web:
         try:
-            chat = client.chat.completions.create(
+            response = client.responses.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": "Je geeft uitsluitend geldige JSON terug. Geen markdown."},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
+                input=prompt,
+                tools=[{"type": "web_search_preview"}],
             )
-            data = extract_json(chat.choices[0].message.content or "{}")
-            data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
-                "Webonderzoek is niet gebruikt; fallback naar standaard AI-generatie."
+            return extract_json(response.output_text)
+        except Exception as first_error:
+            # Niet stoppen: sommige modellen/accounts ondersteunen web_search_preview niet.
+            data = call_openai_json(
+                prompt + "\n\nLET OP: web_search_preview was niet beschikbaar. Gebruik algemene arbeidsmarktkennis, maar blijf concreet.",
+                use_web=False,
+                system=system,
             )
+            data.setdefault("_meta", {})["web_search_warning"] = str(first_error)
             return data
-        except Exception as second_error:
-            raise RuntimeError(f"AI-generatie mislukt. Eerste fout: {first_error}. Tweede fout: {second_error}")
+
+    chat = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return extract_json(chat.choices[0].message.content or "{}")
+
+
+def build_fact_extraction_prompt(vacature: str, intake: str, extra: str) -> str:
+    return f"""
+Je bent een nauwkeurige recruitment-analist. Haal uitsluitend FEITEN uit de vacaturetekst, intake en extra opmerkingen.
+Niet interpreteren, niet mooier maken, niet aanvullen.
+
+Regels:
+- Intake is leidend boven vacaturetekst.
+- Extra opmerkingen zijn leidend boven alles.
+- Neem salaris/schalen concreet over als ze genoemd worden.
+- Neem alle no-go/check-eerst organisaties uit de intake over als losse bedrijfsnamen.
+- Als een veld ontbreekt, gebruik een lege string of lege lijst.
+
+Geef uitsluitend JSON terug:
+{{
+  "klantnaam": "",
+  "vacaturenaam": "",
+  "locatie": "",
+  "uren": "",
+  "salaris": "",
+  "aanleiding_vacature": "",
+  "manager_nadruk": [],
+  "nuances": [],
+  "wat_past_niet": [],
+  "taken_feiten": [],
+  "eisen_feiten": [],
+  "voorkeuren_feiten": [],
+  "usp_feiten": [],
+  "arbeidsvoorwaarden_uit_vacature": [],
+  "no_go_bedrijven": [],
+  "afspraken": []
+}}
+
+VACATURETEKST:
+{vacature[:30000]}
+
+INTAKE NOTES:
+{intake[:30000]}
+
+EXTRA OPMERKINGEN:
+{extra[:10000]}
+""".strip()
+
+
+def build_research_prompt(facts: Dict[str, Any], linkedin_size: str, vacature: str, intake: str) -> str:
+    functie = facts.get("vacaturenaam") or first_nonempty_line(vacature)
+    klant = facts.get("klantnaam", "")
+    locatie = facts.get("locatie", "Nederland")
+    nuances = facts.get("nuances", [])
+    manager_nadruk = facts.get("manager_nadruk", [])
+    return f"""
+Je bent een recruitment researcher voor de Nederlandse arbeidsmarkt.
+Onderzoek de doelgroep voor deze vacature en geef concrete, niet-generieke onderzoeksoutput.
+
+Belangrijke regels:
+- Pullfactoren zijn extern: baseer ze op doelgroep/arbeidsmarkt, NIET op de vacaturetekst.
+- Arbeidsvoorwaarden zijn extern: bepaal welke categorieën deze doelgroep belangrijk vindt. Gebruik generieke labels, geen concrete waarden uit de vacature.
+- Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
+- Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1, Organisatie X.
+- Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
+- Eén bullet = één onderwerp.
+- Geen voorzichtige taal zoals "waarschijnlijk" of "mogelijk" in de uiteindelijke labels.
+- Als doelgroepgrootte uit LinkedIn is ingevuld, neem die letterlijk over.
+
+Context uit de intake/vacature:
+Klant: {klant}
+Functie: {functie}
+Locatie/regio: {locatie}
+Doelgroepgrootte LinkedIn: {linkedin_size}
+Nuances: {json.dumps(nuances, ensure_ascii=False)}
+Manager nadruk: {json.dumps(manager_nadruk, ensure_ascii=False)}
+No-go/check-eerst bedrijven: {json.dumps(facts.get('no_go_bedrijven', []), ensure_ascii=False)}
+
+Geef uitsluitend JSON terug:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "pullfactoren": ["", "", ""],
+  "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["25-34: %", "35-44: %", "45-54: %", "55+: %"],
+  "research_toelichting": ""
+}}
+""".strip()
+
+
+def build_writer_prompt(facts: Dict[str, Any], research: Dict[str, Any], vacature: str, intake: str, linkedin_size: str, extra: str) -> str:
+    return f"""
+Je bent een senior recruitment consultant van Cooble/Sinvae. Schrijf de definitieve PowerPoint-content voor een startdocument.
+
+Strenge schrijfrichtlijnen:
+- Nederlands.
+- Kort en concreet, PowerPoint-stijl.
+- Vrij formuleren, maar niet fantaseren.
+- Intake is leidend boven vacaturetekst.
+- Extra opmerkingen zijn leidend boven alles.
+- Gebruik de feitenextractie en research als bron; schrijf niet opnieuw generiek vanuit de vacature.
+- Intake_samenvatting: 80-130 woorden. Deze dia moet duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
+- Taken: concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
+- Eisen: nooit "relevante ervaring". Schrijf ervaring waarmee.
+- Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
+- Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
+- Arbeidsvoorwaarden: extern en arbeidsmarktgericht. Generieke labels, geen concrete waarden uit vacaturetekst.
+- Concurrenten: echte bedrijfsnamen op bedrijfsniveau.
+- No-go sourcing: uitsluitend bedrijfsnamen uit feitenextractie. Niets toevoegen, niets weglaten.
+- Eén bullet = één onderwerp.
+- Vermijd generieke termen: relevante ervaring, passende kandidaat, dynamische omgeving, goede communicatieve vaardigheden, inhoudelijk specialistisch domein, spin in het web.
+
+{schema_hint()}
+
+FEITENEXTRACTIE:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+ARBEIDSMARKT- EN DOELGROEPRESEARCH:
+{json.dumps(research, ensure_ascii=False, indent=2)}
+
+DOELGROEPGROOTTE GEVONDEN OP LINKEDIN:
+{linkedin_size[:500]}
+
+EXTRA OPMERKINGEN:
+{extra[:10000]}
+
+TER CONTROLE - ORIGINELE VACATURE:
+{vacature[:20000]}
+
+TER CONTROLE - ORIGINELE INTAKE:
+{intake[:20000]}
+""".strip()
+
+
+GENERIC_PHRASES = [
+    "relevante ervaring",
+    "passende kandidaat",
+    "dynamische omgeving",
+    "goede communicatieve vaardigheden",
+    "inhoudelijk specialistisch domein",
+    "spin in het web",
+    "uitdagende functie",
+    "veelzijdige functie",
+    "marktconform salaris",
+]
+
+
+def collect_generic_issues(data: Dict[str, Any]) -> List[str]:
+    issues: List[str] = []
+    paths = {
+        "intake_samenvatting": data.get("intake_samenvatting", ""),
+        "taken": " | ".join(get_nested(data, "functieprofiel.taken_verantwoordelijkheden", [])),
+        "eisen": " | ".join(get_nested(data, "kandidaatprofiel.eisen", [])),
+        "voorkeuren": " | ".join(get_nested(data, "kandidaatprofiel.voorkeuren", [])),
+        "doelgroep": get_nested(data, "sourcingplan.doelgroep", ""),
+    }
+    for label, text in paths.items():
+        low = str(text).lower()
+        for phrase in GENERIC_PHRASES:
+            if phrase in low:
+                issues.append(f"{label}: vermijd '{phrase}'")
+    # Check placeholders bij concurrenten
+    for item in get_nested(data, "concurrentenanalyse.bedrijven", []):
+        if is_placeholder_company(item):
+            issues.append("concurrenten: placeholder-bedrijf gevonden")
+    return issues
+
+
+def build_refine_prompt(data: Dict[str, Any], facts: Dict[str, Any], research: Dict[str, Any], issues: List[str]) -> str:
+    return f"""
+Verbeter deze startdocument-JSON. Los alleen de genoemde kwaliteitsissues op.
+Behoud de JSON-structuur exact. Voeg geen nieuwe feiten toe die niet uit feitenextractie of research komen.
+
+Issues:
+{json.dumps(issues, ensure_ascii=False, indent=2)}
+
+Regels:
+- Maak generieke tekst concreet met domein, sector, senioriteit, klanttype of inhoudelijke context.
+- Eisen moeten benoemen ervaring waarmee.
+- Concurrenten moeten echte bedrijfsnamen zijn.
+- No-go sourcing blijft exact de bedrijven uit feitenextractie.
+- Eén bullet = één onderwerp.
+
+FEITENEXTRACTIE:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+RESEARCH:
+{json.dumps(research, ensure_ascii=False, indent=2)}
+
+HUIDIGE JSON:
+{json.dumps(data, ensure_ascii=False, indent=2)}
+""".strip()
+
+
+def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
+    """v0.6: meerstaps AI-pipeline: feiten -> research -> writer -> kwaliteitscheck."""
+    if status:
+        status.write("Stap 1/4: feiten uit vacature en intake halen")
+    facts = call_openai_json(build_fact_extraction_prompt(vacature, intake, extra), use_web=False)
+
+    # Deterministische aanvulling voorkomt lege klant/functie/salaris als extractor iets mist.
+    fallback = extract_basis_fallback(vacature, intake)
+    for key_map in [("klantnaam", "klantnaam"), ("vacaturenaam", "vacaturenaam"), ("salaris", "salaris")]:
+        fk, sk = key_map
+        if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(sk):
+            facts[fk] = fallback[sk]
+    extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
+    if extracted_no_go:
+        merged = []
+        for item in clean_list(facts.get("no_go_bedrijven", [])) + extracted_no_go:
+            c = clean_company_name(item)
+            if c and c not in merged:
+                merged.append(c)
+        facts["no_go_bedrijven"] = merged
+
+    if status:
+        status.write("Stap 2/4: arbeidsmarkt, doelgroep en concurrenten onderzoeken")
+    research = call_openai_json(build_research_prompt(facts, linkedin_size, vacature, intake), use_web=True)
+
+    if status:
+        status.write("Stap 3/4: startdocument-content schrijven")
+    data = call_openai_json(build_writer_prompt(facts, research, vacature, intake, linkedin_size, extra), use_web=False)
+
+    if status:
+        status.write("Stap 4/4: controleren op generieke tekst")
+    data = apply_business_rules(data, intake + "\n" + extra, linkedin_size, vacature, extra)
+    issues = collect_generic_issues(data)
+    if issues:
+        try:
+            refined = call_openai_json(build_refine_prompt(data, facts, research, issues), use_web=False)
+            data = apply_business_rules(refined, intake + "\n" + extra, linkedin_size, vacature, extra)
+            data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
+                "Automatische generieke-tekstcontrole uitgevoerd."
+            )
+        except Exception as refine_error:
+            data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
+                f"Generieke-tekstcontrole kon niet automatisch herschrijven: {refine_error}"
+            )
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v0.6: facts -> research -> writer -> quality"
+    return data
+
+
+def generate_with_openai(prompt: str) -> Dict[str, Any]:
+    """Compatibiliteitsfunctie voor oudere codepaden."""
+    return call_openai_json(prompt, use_web=True)
 
 
 def demo_data() -> Dict[str, Any]:
@@ -691,9 +941,8 @@ if st.button("Genereer analyse", type="primary"):
                     st.write("Testdata laden")
                     data = demo_data()
                 else:
-                    st.write("AI-analyse starten")
-                    prompt = build_prompt(vacature_text, intake_text, linkedin_size, extra_notes)
-                    data = generate_with_openai(prompt)
+                    st.write("AI-pipeline starten")
+                    data = generate_with_openai_pipeline(vacature_text, intake_text, linkedin_size, extra_notes, status=status)
                 data = apply_business_rules(data, intake_text + "\n" + extra_notes, linkedin_size, vacature_text, extra_notes)
                 st.session_state.data = data
                 status.update(label="Analyse klaar", state="complete", expanded=False)
