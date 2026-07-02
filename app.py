@@ -1,6 +1,7 @@
 import json
 import re
 import tempfile
+from io import BytesIO
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
@@ -9,9 +10,10 @@ import streamlit as st
 from docx import Document
 from openai import OpenAI
 from pptx import Presentation
-from pptx.util import Pt
+from pptx.util import Pt, Emu
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
+from pptx.dml.color import RGBColor
 
 APP_TITLE = "Startdocument Generator"
 APP_DIR = Path(__file__).resolve().parent
@@ -551,6 +553,320 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         return Path(tmp.name).read_bytes()
 
 
+
+# -----------------------------------------------------------------------------
+# v1.2 Presentation Engine
+# -----------------------------------------------------------------------------
+
+FONT_NAME = "Poppins"
+DARK_BLUE = RGBColor(0, 32, 96)
+BODY_COLOR = RGBColor(0, 0, 0)
+ACCENT_BLUE = "#005B99"
+
+TEXT_STYLES = {
+    "slide_title": {"size": 54, "bold": True, "color": DARK_BLUE},
+    "big_title": {"size": 96, "bold": True, "color": DARK_BLUE},
+    "date": {"size": 32, "bold": False, "color": BODY_COLOR},
+    "customer": {"size": 30, "bold": False, "color": BODY_COLOR},
+    "intake": {"size": 24, "bold": False, "color": BODY_COLOR},
+    "body": {"size": 21, "bold": False, "color": BODY_COLOR},
+    "body_small": {"size": 20, "bold": False, "color": BODY_COLOR},
+    "heading": {"size": 45, "bold": True, "color": DARK_BLUE},
+    "subheading": {"size": 26, "bold": True, "color": DARK_BLUE},
+    "metric": {"size": 96, "bold": True, "color": BODY_COLOR},
+    "percentage": {"size": 25, "bold": True, "color": BODY_COLOR},
+}
+
+BULLET_PLACEHOLDERS = {
+    "{{taken_verantwoordelijkheden}}": ("functieprofiel.taken_verantwoordelijkheden", "body_small"),
+    "{{eisen}}": ("kandidaatprofiel.eisen", "body"),
+    "{{voorkeuren}}": ("kandidaatprofiel.voorkeuren", "body"),
+    "{{usp_functie}}": ("functieprofiel.usp_functie", "body"),
+    "{{no_go_sourcing}}": ("kandidaatprofiel.no_go_sourcing", "body"),
+    "{{pullfactoren}}": ("doelgroepanalyse.pullfactoren", "body"),
+    "{{belangrijkste_arbeidsvoorwaarden}}": ("voorwaarden.belangrijkste_arbeidsvoorwaarden", "body"),
+    "{{concurrentenanalyse}}": ("concurrentenanalyse.bedrijven", "body"),
+    "{{zoekrichting}}": ("sourcingplan.zoekrichting", "body"),
+}
+
+PLAIN_PLACEHOLDERS = {
+    "{{klantnaam}}": ("basisgegevens.klantnaam", "customer"),
+    "{{datum}}": ("basisgegevens.datum", "date"),
+    "{{intake_samenvatting}}": ("intake_samenvatting", "intake"),
+    "{{sourcingplan_strategie}}": ("sourcingplan.strategie", "body"),
+    "{{sourcingplan_doelgroep}}": ("sourcingplan.doelgroep", "body"),
+    "{{aanpak_toelichting}}": ("sourcingplan.toelichting", "body"),
+    "{{doelgroepgrootte}}": ("doelgroepanalyse.verwachte_doelgroepgrootte", "metric"),
+    "{{geslacht_man}}": ("doelgroepanalyse.geslacht.man", "percentage"),
+    "{{geslacht_vrouw}}": ("doelgroepanalyse.geslacht.vrouw", "percentage"),
+    "{{afspraken_1}}": ("afspraken.0", "body"),
+    "{{afspraken_2}}": ("afspraken.1", "body"),
+    "{{afspraken_3}}": ("afspraken.2", "body"),
+}
+
+
+def get_nested_v12(data: Dict[str, Any], path: str, default: Any = "") -> Any:
+    cur: Any = data
+    for part in path.split("."):
+        if isinstance(cur, list):
+            if part.isdigit() and int(part) < len(cur):
+                cur = cur[int(part)]
+            else:
+                return default
+        elif isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return default
+    return cur
+
+
+def full_text(shape) -> str:
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return ""
+    return "\n".join(p.text for p in shape.text_frame.paragraphs)
+
+
+def clear_tf(tf) -> None:
+    tf.clear()
+    tf.word_wrap = True
+    # marges iets rustiger zoals PowerPoint-template
+    tf.margin_left = Emu(0)
+    tf.margin_right = Emu(0)
+
+
+def font_size_for_text(style_name: str, text: str, lines: int = 1) -> int:
+    base = TEXT_STYLES.get(style_name, TEXT_STYLES["body"])["size"]
+    words = len(str(text).split())
+    chars = len(str(text))
+    if style_name == "intake":
+        if words > 135 or chars > 900:
+            return 18
+        if words > 115 or chars > 760:
+            return 20
+        if words > 95 or chars > 620:
+            return 22
+        return 24
+    if style_name in {"body", "body_small"}:
+        if lines >= 7 or chars > 520:
+            return 17
+        if lines >= 5 or chars > 380:
+            return 18
+        if chars > 260:
+            return 19
+    return base
+
+
+def apply_run_style(run, style_name: str, *, size_override: int | None = None) -> None:
+    stl = TEXT_STYLES.get(style_name, TEXT_STYLES["body"])
+    run.font.name = FONT_NAME
+    run.font.size = Pt(size_override or stl["size"])
+    run.font.bold = stl.get("bold", False)
+    run.font.color.rgb = stl.get("color", BODY_COLOR)
+
+
+def set_plain_text(shape, text: str, style_name: str) -> None:
+    tf = shape.text_frame
+    clear_tf(tf)
+    text = str(text or "").strip()
+    p = tf.paragraphs[0]
+    p.alignment = None
+    run = p.add_run()
+    run.text = text
+    size = font_size_for_text(style_name, text)
+    apply_run_style(run, style_name, size_override=size)
+    for par in tf.paragraphs:
+        par.space_after = Pt(0)
+        par.space_before = Pt(0)
+
+
+def set_bullet_list(shape, items: List[str], style_name: str = "body") -> None:
+    tf = shape.text_frame
+    clear_tf(tf)
+    clean = clean_list(items)[:8]
+    if not clean:
+        return
+    combined = "\n".join(clean)
+    size = font_size_for_text(style_name, combined, len(clean))
+    for idx, item in enumerate(clean):
+        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        p.text = ""
+        p.level = 0
+        p.space_after = Pt(7 if len(clean) <= 3 else 4)
+        p.space_before = Pt(0)
+        # Gebruik een tekst-bullet zodat het stabiel blijft in PowerPoint en template-stijl benadert.
+        run = p.add_run()
+        run.text = str(item).strip()
+        apply_run_style(run, style_name, size_override=size)
+        # echte bullet-properties via XML worden soms genegeerd door PowerPoint, daarom zetten we een bullet prefix veilig.
+        p._p.get_or_add_pPr()
+        if not run.text.startswith("•"):
+            run.text = "• " + run.text
+
+
+def set_mixed_text_frame(shape, replacements: Dict[str, str], style_name: str = "body") -> None:
+    # Voor tekstvakken met labels + placeholders, zoals salaris/locatie/uren.
+    original = full_text(shape)
+    text = original
+    for key, value in replacements.items():
+        text = text.replace(key, str(value or ""))
+    tf = shape.text_frame
+    clear_tf(tf)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        lines = [text.strip()]
+    size = font_size_for_text(style_name, "\n".join(lines), len(lines))
+    for idx, line in enumerate(lines):
+        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        run = p.add_run()
+        run.text = line
+        apply_run_style(run, style_name, size_override=size)
+        p.space_after = Pt(4)
+
+
+def parse_age_items(items: List[str]) -> tuple[list[str], list[float]]:
+    labels, values = [], []
+    for raw in clean_list(items):
+        text = str(raw)
+        m = re.search(r"(\d{1,3})\s*%", text)
+        value = float(m.group(1)) if m else 0.0
+        label = re.sub(r"[:\-–]?\s*\d{1,3}\s*%", "", text).strip(" :-–")
+        if not label:
+            label = text.strip()
+        labels.append(label)
+        values.append(value)
+    if not labels or sum(values) == 0:
+        labels = ["25-34", "35-44", "45-54", "55+"]
+        values = [30, 35, 25, 10]
+    return labels[:5], values[:5]
+
+
+def create_age_chart_image(items: List[str]) -> BytesIO:
+    import matplotlib.pyplot as plt
+    labels, values = parse_age_items(items)
+    colors = ["#005B99", "#0077C8", "#6CB6E8", "#A6CBE7", "#DCECF7"]
+    fig, ax = plt.subplots(figsize=(5.2, 2.8), dpi=180)
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    wedges, texts, autotexts = ax.pie(
+        values,
+        colors=colors[:len(values)],
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 1},
+        autopct=lambda pct: f"{pct:.0f}%" if pct >= 4 else "",
+        pctdistance=0.78,
+        textprops={"fontsize": 8, "color": "white", "fontweight": "bold"},
+    )
+    ax.legend(wedges, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8)
+    ax.set(aspect="equal")
+    buf = BytesIO()
+    plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.04)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def render_shape_v12(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            render_shape_v12(slide, subshape, data, replacements)
+        return
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    original = full_text(shape)
+    if not original:
+        return
+
+    if "{{leeftijdsverdeling}}" in original:
+        # Tekstplaceholder leegmaken en op dezelfde dia een echte afbeelding/infographic plaatsen.
+        shape.text_frame.clear()
+        img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
+        # Vaste chart-zone op de leeftijdsdia, rechts onder de titel.
+        slide.shapes.add_picture(img, Emu(8600000), Emu(5350000), width=Emu(6200000), height=Emu(3100000))
+        return
+
+    stripped = original.strip()
+    for placeholder, (path, style) in BULLET_PLACEHOLDERS.items():
+        if placeholder in stripped and stripped == placeholder:
+            set_bullet_list(shape, get_nested_v12(data, path, []), style)
+            return
+
+    for placeholder, (path, style) in PLAIN_PLACEHOLDERS.items():
+        if placeholder in stripped and stripped == placeholder:
+            set_plain_text(shape, get_nested_v12(data, path, ""), style)
+            return
+
+    # Speciale titel met vacature/doelgroep.
+    if "{{doelgroep_titel}}" in original:
+        text = original.replace("{{doelgroep_titel}}", str(get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
+        set_plain_text(shape, text, "slide_title")
+        return
+
+    if "{{vacaturenaam}}" in original:
+        # Op slide 2 staat vacaturenaam als subtitel, op slide 1 mogelijk niet. Houd hem groot maar niet té groot.
+        text = original.replace("{{vacaturenaam}}", str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
+        style = "slide_title" if len(text) < 45 else "heading"
+        set_plain_text(shape, text, style)
+        return
+
+    if "{{" in original:
+        set_mixed_text_frame(shape, replacements, "body_small")
+        return
+
+    # Bestaande vaste koppen in de template krijgen Poppins-stijl terug als de template runs leeg waren.
+    if original.strip().upper() in {"AANPAK", "AFSPRAKEN", "DOELGROEP ANALYSE", "DOELGROEP\nANALYSE"}:
+        set_plain_text(shape, original, "big_title")
+
+
+def generate_pptx(data: Dict[str, Any]) -> bytes:
+    """v1.2: PowerPoint-renderer met template-styling, Poppins-fonts en leeftijdsverdeling als afbeelding."""
+    template_path = get_template_path()
+    prs = Presentation(str(template_path))
+    afspraken = data.get("afspraken") or []
+    concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
+    concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
+
+    replacements = {
+        "{{klantnaam}}": get_nested_v12(data, "basisgegevens.klantnaam"),
+        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{datum}}": get_nested_v12(data, "basisgegevens.datum") or date.today().strftime("%d-%m-%Y"),
+        "{{intake_samenvatting}}": data.get("intake_samenvatting", ""),
+        "{{sourcingplan_strategie}}": get_nested_v12(data, "sourcingplan.strategie"),
+        "{{sourcingplan_doelgroep}}": get_nested_v12(data, "sourcingplan.doelgroep"),
+        "{{concurrentenanalyse}}": concurrenten_text,
+        "{{zoekrichting}}": bullets(get_nested_v12(data, "sourcingplan.zoekrichting", [])),
+        "{{aanpak_toelichting}}": get_nested_v12(data, "sourcingplan.toelichting"),
+        "{{doelgroep_titel}}": get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{taken_verantwoordelijkheden}}": bullets(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", [])),
+        "{{eisen}}": bullets(get_nested_v12(data, "kandidaatprofiel.eisen", [])),
+        "{{voorkeuren}}": bullets(get_nested_v12(data, "kandidaatprofiel.voorkeuren", [])),
+        "{{no_go_sourcing}}": bullets(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", [])),
+        "{{doelgroepgrootte}}": get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
+        "{{doelgroep_regio}}": get_nested_v12(data, "doelgroepanalyse.regio") or "Nederland",
+        "{{salaris}}": get_nested_v12(data, "basisgegevens.salaris"),
+        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie"),
+        "{{uren}}": get_nested_v12(data, "basisgegevens.uren"),
+        "{{usp_functie}}": bullets(get_nested_v12(data, "functieprofiel.usp_functie", [])),
+        "{{pullfactoren}}": bullets(get_nested_v12(data, "doelgroepanalyse.pullfactoren", [])),
+        "{{belangrijkste_arbeidsvoorwaarden}}": bullets(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", [])),
+        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man"),
+        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw"),
+        "{{leeftijdsverdeling}}": bullets(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", [])),
+        "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
+        "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
+        "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
+    }
+
+    for slide in prs.slides:
+        for shape in list(slide.shapes):
+            render_shape_v12(slide, shape, data, replacements)
+        for shape in slide.shapes:
+            clear_unreplaced_placeholders(shape)
+
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        prs.save(tmp.name)
+        return Path(tmp.name).read_bytes()
+
 def schema_hint() -> str:
     return """
 Geef uitsluitend geldige JSON terug in exact deze structuur:
@@ -629,7 +945,7 @@ Belangrijke regels:
 - Als doelgroepgrootte uit LinkedIn is ingevuld, gebruik die waarde letterlijk.
 - Klantnaam en vacaturenaam moeten altijd gevuld zijn. Haal klantnaam uit intake/vacaturetekst. Haal vacaturenaam uit intake/vacaturetitel.
 - Salaris: als er een schaal of salarisrange in intake/vacature staat, neem die concreet over. Gebruik niet "in overleg" als er schalen of bedragen staan.
-- Intake_samenvatting: schrijf concreet en iets uitgebreider. Dit veld moet in één dia duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, wat juist niet past en nadruk uit de intake. Richtlijn: 70-120 woorden.
+- Intake_samenvatting: schrijf concreet maar compact. Dit veld moet in één dia duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, wat juist niet past en nadruk uit de intake. Richtlijn: 70-100 woorden.
 - Taken & verantwoordelijkheden: vermijd generieke bullets. Benoem de inhoudelijke context, doelgroep/klanttype, projecten of domein.
 - Eisen: vermijd "relevante ervaring". Schrijf ervaring waarmee, bijvoorbeeld "ervaring met industriële waterprojecten".
 - Doelgroep: zeer concreet. Gebruik vacaturetitel, domein, senioriteit, sector en relevante achtergrond. Nooit generiek zoals "kandidaten met relevante advieservaring".
@@ -803,7 +1119,7 @@ Strenge schrijfrichtlijnen:
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
 - Gebruik de feitenextractie en research als bron; schrijf niet opnieuw generiek vanuit de vacature.
-- Intake_samenvatting: 110-160 woorden als één mooie lopende tekst. Geen bullets, geen opsomming. Deze dia moet zelfstandig duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
+- Intake_samenvatting: 80-110 woorden als één mooie lopende tekst. Geen bullets, geen opsomming. Deze dia moet zelfstandig duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
 - Taken: precies 3 bullets, concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
 - Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
@@ -904,7 +1220,7 @@ Je bent presentation editor voor een Cooble startdocument. Verbeter alleen de pr
 Behoud de JSON-structuur exact en voeg geen feiten toe die niet in feitenextractie of research staan.
 
 Harde regels:
-- intake_samenvatting wordt één lopende tekst van 110-160 woorden. Geen bullets, geen kopjes, geen losse opsomming.
+- intake_samenvatting wordt één lopende tekst van 80-110 woorden. Geen bullets, geen kopjes, geen losse opsomming.
 - taken_verantwoordelijkheden bevat exact 3 bullets.
 - eisen bevat exact 3 bullets.
 - voorkeuren bevat exact 3 bullets.

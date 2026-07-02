@@ -1,24 +1,19 @@
-# Startdocument Generator v1.1
+# Startdocument Generator - v1.2
 
-Deze versie focust op PowerPoint-export en een rustigere interface.
+Deze versie focust op de PowerPoint-layout.
 
-## Aangepast in v1.1
+Aanpassingen:
+- PowerPoint-renderer vernieuwd: tekst wordt niet alleen vervangen, maar opnieuw gestyled volgens het Cooble-template.
+- Lettergroottes sluiten beter aan op het voorbeeldbestand.
+- Intake-samenvatting compacter gemaakt.
+- Bulletvelden gebruiken consistente lettergroottes en spacing.
+- Leeftijdsverdeling wordt als afbeelding/grafiek in de PowerPoint geplaatst.
+- AI-output blijft inhoudelijk gelijk aan de vorige goede versie.
 
-- De zichtbare kwaliteitscheck is uit de interface gehaald.
-- De PowerPoint-template wordt nu robuuster gevonden:
-  - `templates/Startdocument_Cooble_template.pptx`
-  - of `Startdocument_Cooble_template.pptx` in de hoofdmap.
-- De template zit voor de zekerheid op beide plekken in deze zip.
-- De ingevulde data/preview blijft gelijk aan v1.0.
+Upload alle bestanden opnieuw naar GitHub, inclusief:
+- `app.py`
+- `requirements.txt`
+- `templates/Startdocument_Cooble_template.pptx`
+- `Startdocument_Cooble_template.pptx`
 
-## Streamlit Secrets
-
-Zet je OpenAI-key in Streamlit Secrets:
-
-```toml
-OPENAI_API_KEY = "jouw-api-key"
-```
-
-## Upload naar GitHub
-
-Upload alle bestanden en mappen uit deze zip naar je repository. Let erop dat de map `templates` mee geüpload wordt.
+Let op: Streamlit installeert nu ook `matplotlib` voor de leeftijdsverdeling-afbeelding.
