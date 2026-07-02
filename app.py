@@ -293,6 +293,48 @@ def extract_no_go_companies_from_intake(intake_text: str) -> List[str]:
     return result
 
 
+
+
+def strip_bullet_markers(text: str) -> str:
+    """Maakt van eventuele bullet-output weer één lopende tekst."""
+    text = str(text or "").strip()
+    # Verwijder bullets aan het begin van regels en maak er lopende zinnen van.
+    lines = [re.sub(r"^\s*[•\-*]\s*", "", ln).strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        text = " ".join(lines)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def limit_words(text: str, max_words: int = 28) -> str:
+    words = str(text or "").split()
+    if len(words) <= max_words:
+        return str(text or "").strip()
+    return " ".join(words[:max_words]).rstrip(" ,;")
+
+
+def presentation_bullets(items: List[str], max_items: int = 3) -> List[str]:
+    """Presentation layer: exact maximaal 3 bullets, één onderwerp per bullet."""
+    out: List[str] = []
+    for item in split_one_topic_per_bullet(items):
+        item = re.sub(r"\s+", " ", str(item).strip(" •-\n\t"))
+        if not item:
+            continue
+        item = limit_words(item, 22)
+        if item not in out:
+            out.append(item)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def presentation_summary(text: str) -> str:
+    """Intake-samenvatting hoort één mooie lopende tekst te zijn, geen bullets."""
+    text = strip_bullet_markers(text)
+    # Haal dubbele spaties en rare bullet-restanten weg.
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: str, vacature_text: str = "", extra_notes: str = "") -> Dict[str, Any]:
     """Harde sprint-0.4 regels die altijd gelden, ook na AI-generatie."""
     data = ensure_core_keys(data)
@@ -319,13 +361,24 @@ def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: 
             merged.append(item)
     k["no_go_sourcing"] = merged
 
-    # Pullfactoren en voorwaarden: één onderwerp per bullet.
+    # Presentation layer: intake-samenvatting is één lopende tekst.
+    data["intake_samenvatting"] = presentation_summary(data.get("intake_samenvatting", ""))
+
+    # Presentation layer: exact maximaal 3 bullets waar de PowerPoint dit vraagt.
+    f = data.setdefault("functieprofiel", {})
+    f["taken_verantwoordelijkheden"] = presentation_bullets(f.get("taken_verantwoordelijkheden", []), 3)
+    f["usp_functie"] = presentation_bullets(f.get("usp_functie", []), 3)
+
+    k["eisen"] = presentation_bullets(k.get("eisen", []), 3)
+    k["voorkeuren"] = presentation_bullets(k.get("voorkeuren", []), 3)
+
+    # Pullfactoren en voorwaarden: één onderwerp per bullet, maximaal 3.
     d = data.setdefault("doelgroepanalyse", {})
-    d["pullfactoren"] = split_one_topic_per_bullet(d.get("pullfactoren", []))[:3]
+    d["pullfactoren"] = presentation_bullets(d.get("pullfactoren", []), 3)
     d["leeftijdsverdeling"] = normalize_age_distribution(d.get("leeftijdsverdeling", []))
 
     v = data.setdefault("voorwaarden", {})
-    v["belangrijkste_arbeidsvoorwaarden"] = normalize_conditions(v.get("belangrijkste_arbeidsvoorwaarden", []))
+    v["belangrijkste_arbeidsvoorwaarden"] = presentation_bullets(normalize_conditions(v.get("belangrijkste_arbeidsvoorwaarden", [])), 3)
 
     # Concurrenten mogen nooit placeholders zijn. Altijd bedrijfsnamen.
     c = data.setdefault("concurrentenanalyse", {})
@@ -497,7 +550,7 @@ Belangrijke regels:
 - No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen. Laat geen enkel bedrijf weg.
 - Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
 - Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
-- Eén bullet = één onderwerp. Combineer nooit meerdere onderwerpen in één bullet.
+- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items. Combineer nooit meerdere onderwerpen in één bullet.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
 - Houd lijsten kort: meestal precies 3 bullets, behalve no-go sourcing en concurrenten; die mogen meer bedrijven bevatten.
@@ -639,7 +692,7 @@ Belangrijke regels:
 - Concurrentenanalyse is altijd relevant en altijd op bedrijfsniveau.
 - Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1, Organisatie X.
 - Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
-- Eén bullet = één onderwerp.
+- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
 - Geen voorzichtige taal zoals "waarschijnlijk" of "mogelijk" in de uiteindelijke labels.
 - Als doelgroepgrootte uit LinkedIn is ingevuld, neem die letterlijk over.
 
@@ -680,15 +733,15 @@ Strenge schrijfrichtlijnen:
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
 - Gebruik de feitenextractie en research als bron; schrijf niet opnieuw generiek vanuit de vacature.
-- Intake_samenvatting: 80-130 woorden. Deze dia moet duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
-- Taken: concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
-- Eisen: nooit "relevante ervaring". Schrijf ervaring waarmee.
+- Intake_samenvatting: 110-160 woorden als één mooie lopende tekst. Geen bullets, geen opsomming. Deze dia moet zelfstandig duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
+- Taken: precies 3 bullets, concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
+- Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
 - Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
 - Arbeidsvoorwaarden: extern en arbeidsmarktgericht. Generieke labels, geen concrete waarden uit vacaturetekst.
 - Concurrenten: echte bedrijfsnamen op bedrijfsniveau.
 - No-go sourcing: uitsluitend bedrijfsnamen uit feitenextractie. Niets toevoegen, niets weglaten.
-- Eén bullet = één onderwerp.
+- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
 - Vermijd generieke termen: relevante ervaring, passende kandidaat, dynamische omgeving, goede communicatieve vaardigheden, inhoudelijk specialistisch domein, spin in het web.
 
 {schema_hint()}
@@ -760,7 +813,7 @@ Regels:
 - Eisen moeten benoemen ervaring waarmee.
 - Concurrenten moeten echte bedrijfsnamen zijn.
 - No-go sourcing blijft exact de bedrijven uit feitenextractie.
-- Eén bullet = één onderwerp.
+- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
 
 FEITENEXTRACTIE:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
@@ -773,10 +826,39 @@ HUIDIGE JSON:
 """.strip()
 
 
+
+
+def build_presentation_prompt(data: Dict[str, Any], facts: Dict[str, Any], research: Dict[str, Any]) -> str:
+    return f"""
+Je bent presentation editor voor een Cooble startdocument. Verbeter alleen de presentatiekwaliteit.
+Behoud de JSON-structuur exact en voeg geen feiten toe die niet in feitenextractie of research staan.
+
+Harde regels:
+- intake_samenvatting wordt één lopende tekst van 110-160 woorden. Geen bullets, geen kopjes, geen losse opsomming.
+- taken_verantwoordelijkheden bevat exact 3 bullets.
+- eisen bevat exact 3 bullets.
+- voorkeuren bevat exact 3 bullets.
+- usp_functie bevat exact 3 bullets.
+- pullfactoren bevat exact 3 bullets.
+- belangrijkste_arbeidsvoorwaarden bevat exact 3 bullets.
+- Eén bullet = één onderwerp.
+- Iedere bullet is concreet voor deze vacature of doelgroep.
+- Geen generieke termen zoals relevante ervaring, passende kandidaat, dynamische omgeving.
+
+FEITENEXTRACTIE:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+RESEARCH:
+{json.dumps(research, ensure_ascii=False, indent=2)}
+
+HUIDIGE STARTDOCUMENT JSON:
+{json.dumps(data, ensure_ascii=False, indent=2)}
+""".strip()
+
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
-    """v0.6: meerstaps AI-pipeline: feiten -> research -> writer -> kwaliteitscheck."""
+    """v0.7: meerstaps AI-pipeline met aparte presentation layer."""
     if status:
-        status.write("Stap 1/4: feiten uit vacature en intake halen")
+        status.write("Stap 1/5: feiten uit vacature en intake halen")
     facts = call_openai_json(build_fact_extraction_prompt(vacature, intake, extra), use_web=False)
 
     # Deterministische aanvulling voorkomt lege klant/functie/salaris als extractor iets mist.
@@ -795,15 +877,24 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
         facts["no_go_bedrijven"] = merged
 
     if status:
-        status.write("Stap 2/4: arbeidsmarkt, doelgroep en concurrenten onderzoeken")
+        status.write("Stap 2/5: arbeidsmarkt, doelgroep en concurrenten onderzoeken")
     research = call_openai_json(build_research_prompt(facts, linkedin_size, vacature, intake), use_web=True)
 
     if status:
-        status.write("Stap 3/4: startdocument-content schrijven")
+        status.write("Stap 3/5: startdocument-content schrijven")
     data = call_openai_json(build_writer_prompt(facts, research, vacature, intake, linkedin_size, extra), use_web=False)
 
     if status:
-        status.write("Stap 4/4: controleren op generieke tekst")
+        status.write("Stap 4/5: presentatiekwaliteit aanscherpen")
+    try:
+        data = call_openai_json(build_presentation_prompt(data, facts, research), use_web=False)
+    except Exception as presentation_error:
+        data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
+            f"Presentation layer kon niet automatisch herschrijven: {presentation_error}"
+        )
+
+    if status:
+        status.write("Stap 5/5: controleren op generieke tekst")
     data = apply_business_rules(data, intake + "\n" + extra, linkedin_size, vacature, extra)
     issues = collect_generic_issues(data)
     if issues:
@@ -817,7 +908,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
             data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(
                 f"Generieke-tekstcontrole kon niet automatisch herschrijven: {refine_error}"
             )
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v0.6: facts -> research -> writer -> quality"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v0.7: facts -> research -> writer -> presentation -> quality"
     return data
 
 

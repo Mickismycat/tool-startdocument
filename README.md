@@ -1,30 +1,21 @@
-# Startdocument Generator v0.6
+# Startdocument Generator v0.7
 
-Online Streamlit-app voor het genereren van een Cooble startdocument.
+Quality sprint: presentation layer.
 
-## Nieuw in v0.6
-
-- AI-pipeline in meerdere stappen: feitenextractie → arbeidsmarktresearch → writer → kwaliteitscontrole.
-- Research-stap voor doelgroep, arbeidsvoorwaarden, pullfactoren en concurrenten.
-- Automatische controle op generieke teksten zoals “relevante ervaring”.
-- Concurrentenanalyse blijft verplicht en op bedrijfsniveau.
-- No-go sourcing blijft alleen bedrijfsnamen uit intake/extra opmerkingen.
-- Datum blijft altijd de generatiedatum.
+## Nieuw in v0.7
+- Intake-samenvatting wordt opnieuw aangescherpt naar één lopende tekst.
+- Taken & verantwoordelijkheden: maximaal/exact 3 bullets in de outputlaag.
+- Eisen, voorkeuren, USP's, pullfactoren en arbeidsvoorwaarden: maximaal/exact 3 bullets.
+- Eén bullet = één onderwerp.
+- Extra presentation refinement-stap tussen writer en kwaliteitscontrole.
+- Geen nieuwe features; focus op outputkwaliteit.
 
 ## Deploy
-
-Upload alle bestanden naar GitHub. Streamlit Cloud redeployt automatisch.
+Upload/vervang de bestanden in GitHub. Streamlit redeployt automatisch.
 
 ## Secrets
-
-Zet in Streamlit Secrets:
-
-```toml
-OPENAI_API_KEY = "jouw-api-key"
-```
-
-Optioneel:
+Voeg in Streamlit Secrets toe:
 
 ```toml
-OPENAI_MODEL = "gpt-4.1"
+OPENAI_API_KEY = "jouw-nieuwe-api-key"
 ```
