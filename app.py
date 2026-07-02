@@ -9,6 +9,7 @@ import streamlit as st
 from docx import Document
 from openai import OpenAI
 from pptx import Presentation
+from pptx.util import Pt
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
@@ -392,6 +393,11 @@ def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: 
 
 
 def bullets(items: List[str]) -> str:
+    cleaned = clean_list(items)
+    return "\n".join(f"• {item}" for item in cleaned)
+
+
+def plain_lines(items: List[str]) -> str:
     return "\n".join(clean_list(items))
 
 
@@ -433,6 +439,53 @@ def replace_text_in_shape(shape, replacements: Dict[str, str]) -> None:
                         run.text = text
 
 
+def autofit_shape_text(shape) -> None:
+    """Houdt gegenereerde PowerPoints netjes: lange tekst wordt iets kleiner gezet."""
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            autofit_shape_text(subshape)
+        return
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    text = "\n".join(p.text for p in shape.text_frame.paragraphs).strip()
+    if not text or "{{" in text:
+        return
+    length = len(text)
+    lines = max(1, text.count("\n") + 1)
+    # Alleen lange contentvakken aanpassen; korte titels blijven ongemoeid.
+    if length < 120 and lines <= 3:
+        return
+    if length > 900 or lines > 9:
+        size = 8
+    elif length > 650 or lines > 7:
+        size = 9
+    elif length > 420 or lines > 5:
+        size = 10
+    else:
+        size = 11
+    for paragraph in shape.text_frame.paragraphs:
+        for run in paragraph.runs:
+            run.font.size = Pt(size)
+
+
+def clear_unreplaced_placeholders(shape) -> None:
+    """Voorkomt dat {{placeholder}} zichtbaar blijft wanneer data ontbreekt."""
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            clear_unreplaced_placeholders(subshape)
+        return
+    if hasattr(shape, "text_frame") and shape.has_text_frame:
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.text = re.sub(r"\{\{[^}]+\}\}", "", run.text)
+    if hasattr(shape, "has_table") and shape.has_table:
+        for row in shape.table.rows:
+            for cell in row.cells:
+                for paragraph in cell.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        run.text = re.sub(r"\{\{[^}]+\}\}", "", run.text)
+
+
 def generate_pptx(data: Dict[str, Any]) -> bytes:
     if not TEMPLATE_PATH.exists():
         raise RuntimeError(f"Template niet gevonden: {TEMPLATE_PATH}")
@@ -458,6 +511,7 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         "{{voorkeuren}}": bullets(get_nested(data, "kandidaatprofiel.voorkeuren", [])),
         "{{no_go_sourcing}}": bullets(get_nested(data, "kandidaatprofiel.no_go_sourcing", [])),
         "{{doelgroepgrootte}}": get_nested(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
+        "{{doelgroep_regio}}": get_nested(data, "doelgroepanalyse.regio") or "Nederland",
         "{{salaris}}": get_nested(data, "basisgegevens.salaris"),
         "{{locatie}}": get_nested(data, "basisgegevens.locatie"),
         "{{uren}}": get_nested(data, "basisgegevens.uren"),
@@ -475,6 +529,8 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
     for slide in prs.slides:
         for shape in slide.shapes:
             replace_text_in_shape(shape, replacements)
+            clear_unreplaced_placeholders(shape)
+            autofit_shape_text(shape)
 
     with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
         prs.save(tmp.name)
@@ -921,20 +977,20 @@ def demo_data() -> Dict[str, Any]:
     return {
         "basisgegevens": {
             "klantnaam": "Voorbeeldklant",
-            "vacaturenaam": "Voorbeeldfunctie",
+            "vacaturenaam": "Consultant Waterkwaliteit",
             "datum": date.today().strftime("%d-%m-%Y"),
             "locatie": "Nederland",
             "uren": "32-40 uur",
-            "salaris": "In overleg",
+            "salaris": "Schaal 8/9/10",
         },
-        "intake_samenvatting": "Voor deze opdracht zoeken we een kandidaat die inhoudelijke expertise combineert met adviesvaardigheden. De rol vraagt om zelfstandigheid, stakeholdermanagement en het vermogen om complexe vraagstukken praktisch te vertalen.",
+        "intake_samenvatting": "Voor deze opdracht zoeken we een consultant die klanten kan adviseren over waterkwaliteit, vergunningen en industriële waterstromen. De nadruk ligt op iemand die technische of milieukundige kennis kan vertalen naar haalbare oplossingen voor bedrijven, waterschappen en drinkwaterorganisaties. Tijdens de intake is vooral benoemd dat de kandidaat breed naar water moet kunnen kijken, maar niet uit de hoek van hydrologie, ecologie of waterkwantiteit hoeft te komen. Een achtergrond in procestechnologie, werktuigbouwkunde of milieukunde kan juist interessant zijn wanneer de kandidaat adviesvaardig is en graag samenwerkt in multidisciplinaire projecten.",
         "functieprofiel": {
-            "taken_verantwoordelijkheden": ["Adviseren van klanten", "Vertalen van vraagstukken naar oplossingen", "Samenwerken met multidisciplinaire teams"],
-            "usp_functie": ["Inhoudelijk uitdagende projecten", "Ruimte voor ontwikkeling", "Impact bij diverse klanten"],
+            "taken_verantwoordelijkheden": ["Adviseren over industriële waterkwaliteit", "Meedenken over vergunningen en compliance", "Ondersteunen van multidisciplinaire waterprojecten"],
+            "usp_functie": ["Bouwen aan een groeiend waterteam", "Impact op duurzaam industrieel watergebruik", "Veel ruimte voor inhoudelijke ontwikkeling"],
         },
         "kandidaatprofiel": {
-            "eisen": ["HBO werk- en denkniveau", "Relevante ervaring", "Sterke adviesvaardigheden"],
-            "voorkeuren": ["Consultancyervaring", "Ervaring binnen technische omgeving", "Zelfstandige werkhouding"],
+            "eisen": ["HBO werk- en denkniveau", "Ervaring met waterkwaliteit of afvalwater", "Adviesvaardigheid richting klanten"],
+            "voorkeuren": ["Ervaring met vergunningstrajecten", "Achtergrond in procestechnologie", "Ervaring binnen industriële projecten"],
             "no_go_sourcing": [],
         },
         "voorwaarden": {"belangrijkste_arbeidsvoorwaarden": ["Hybride werken", "Ontwikkelmogelijkheden", "Goede pensioenregeling"]},
@@ -947,23 +1003,85 @@ def demo_data() -> Dict[str, Any]:
             "leeftijdsverdeling": ["25-34: 30%", "35-44: 40%", "45-54: 20%", "55+: 10%"],
         },
         "sourcingplan": {
-            "doelgroep": "Kandidaten met relevante advieservaring binnen een inhoudelijk specialistisch domein.",
+            "doelgroep": "Waterkwaliteitsadviseurs, milieukundig consultants en procestechnologen met ervaring in industriële waterstromen, vergunningen of afvalwaterprojecten.",
             "strategie": "Doelgroepgedreven sourcing met focus op vergelijkbare functies en organisaties.",
             "belangrijkste_functietitels": ["Consultant", "Adviseur", "Specialist"],
             "zoekrichting": ["LinkedIn sourcing", "Concurrenten op bedrijfsniveau", "Brede functietitelvarianten"],
             "toelichting": "Start breed en verfijn op inhoudelijke expertise en adviesvaardigheden.",
         },
-        "concurrentenanalyse": {"relevant": True, "bedrijven": ["Bedrijf A", "Bedrijf B", "Bedrijf C"], "toelichting": "Vergelijkbare organisaties met relevante doelgroep."},
+        "concurrentenanalyse": {"relevant": True, "bedrijven": ["Witteveen+Bos", "Royal HaskoningDHV", "Sweco", "Antea Group", "Arcadis"], "toelichting": "Ingenieurs- en adviesbureaus waar vergelijkbare water- en milieuadviseurs werken."},
         "afspraken": ["Kandidaten worden voorgesteld na telefonische kennismaking.", "Feedback wordt zo snel mogelijk gedeeld.", "Bij profielwijzigingen wordt direct geschakeld."],
         "kwaliteitscontrole": {"ontbrekende_informatie": [], "aannames": [], "waarschuwingen": []},
     }
 
 
-def editable_list(label: str, values: List[str], key: str, max_items: int = 6) -> List[str]:
+
+
+def validate_startdocument(data: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Geeft duidelijke kwaliteitsmeldingen terug voor de preview."""
+    data = ensure_core_keys(data)
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if is_empty_or_placeholder(get_nested(data, "basisgegevens.klantnaam", "")):
+        errors.append("Klantnaam ontbreekt.")
+    if is_empty_or_placeholder(get_nested(data, "basisgegevens.vacaturenaam", "")):
+        errors.append("Vacaturenaam ontbreekt.")
+    if len(str(data.get("intake_samenvatting", "")).split()) < 60:
+        warnings.append("Intake-samenvatting is mogelijk te kort om de nuance goed over te brengen.")
+
+    capped_lists = {
+        "Taken & verantwoordelijkheden": get_nested(data, "functieprofiel.taken_verantwoordelijkheden", []),
+        "Eisen": get_nested(data, "kandidaatprofiel.eisen", []),
+        "Voorkeuren": get_nested(data, "kandidaatprofiel.voorkeuren", []),
+        "USP's": get_nested(data, "functieprofiel.usp_functie", []),
+        "Pullfactoren": get_nested(data, "doelgroepanalyse.pullfactoren", []),
+        "Arbeidsvoorwaarden": get_nested(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", []),
+    }
+    for label, values in capped_lists.items():
+        clean = clean_list(values)
+        if len(clean) > 3:
+            errors.append(f"{label} bevat meer dan 3 bullets.")
+        if len(clean) < 3:
+            warnings.append(f"{label} bevat minder dan 3 bullets.")
+
+    generic_issues = collect_generic_issues(data)
+    warnings.extend(generic_issues)
+
+    competitors = clean_list(get_nested(data, "concurrentenanalyse.bedrijven", []))
+    if not competitors:
+        warnings.append("Concurrentenanalyse bevat nog geen bedrijven.")
+    for company in competitors:
+        if is_placeholder_company(company):
+            errors.append("Concurrentenanalyse bevat een placeholder-bedrijf.")
+
+    return {"errors": errors, "warnings": warnings}
+
+
+def render_quality_check(data: Dict[str, Any]) -> None:
+    result = validate_startdocument(data)
+    errors = result["errors"]
+    warnings = result["warnings"]
+    if not errors and not warnings:
+        st.success("Kwaliteitscheck geslaagd")
+        return
+    if errors:
+        st.error("Kwaliteitscheck: actie nodig")
+        for err in errors:
+            st.write(f"- {err}")
+    if warnings:
+        st.warning("Aandachtspunten")
+        for warn in warnings:
+            st.write(f"- {warn}")
+
+
+def editable_list(label: str, values: List[str], key: str, max_items: int = 6, *, hard_max: bool = False) -> List[str]:
     st.markdown(f"**{label}**")
     result = []
     values = values or []
-    rows = max(max_items, len(values))
+    rows = max_items if hard_max else max(max_items, len(values))
+    if hard_max and len(clean_list(values)) > max_items:
+        st.caption(f"Let op: dit onderdeel is automatisch teruggebracht naar maximaal {max_items} bullets.")
     for i in range(rows):
         default = values[i] if i < len(values) else ""
         val = st.text_input(f"{label} {i+1}", value=default, key=f"{key}_{i}", label_visibility="collapsed")
@@ -986,7 +1104,7 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 st.title("📄 Startdocument Generator")
-st.caption("Upload de vacature en intake. De AI maakt een analyse, jij controleert de preview en downloadt daarna het startdocument.")
+st.caption("Upload de vacature en intake. Controleer de preview en download daarna een nette PowerPoint in de vaste Cooble-template.")
 
 with st.sidebar:
     st.header("Status")
@@ -1062,10 +1180,10 @@ if st.session_state.data:
     with tabs[1]:
         f = data.setdefault("functieprofiel", {})
         k = data.setdefault("kandidaatprofiel", {})
-        f["taken_verantwoordelijkheden"] = editable_list("Taken & verantwoordelijkheden", f.get("taken_verantwoordelijkheden", []), "taken", 3)
-        k["eisen"] = editable_list("Eisen", k.get("eisen", []), "eisen", 3)
-        k["voorkeuren"] = editable_list("Voorkeuren", k.get("voorkeuren", []), "voorkeuren", 3)
-        f["usp_functie"] = editable_list("USP's van de functie", f.get("usp_functie", []), "usp", 3)
+        f["taken_verantwoordelijkheden"] = editable_list("Taken & verantwoordelijkheden", f.get("taken_verantwoordelijkheden", []), "taken", 3, hard_max=True)
+        k["eisen"] = editable_list("Eisen", k.get("eisen", []), "eisen", 3, hard_max=True)
+        k["voorkeuren"] = editable_list("Voorkeuren", k.get("voorkeuren", []), "voorkeuren", 3, hard_max=True)
+        f["usp_functie"] = editable_list("USP's van de functie", f.get("usp_functie", []), "usp", 3, hard_max=True)
         k["no_go_sourcing"] = editable_list("No-go sourcing", k.get("no_go_sourcing", []), "nogo", 5)
 
     with tabs[2]:
@@ -1074,8 +1192,8 @@ if st.session_state.data:
         c1, c2 = st.columns(2)
         d["verwachte_doelgroepgrootte"] = c1.text_input("Doelgroepgrootte", d.get("verwachte_doelgroepgrootte", ""))
         d["regio"] = c2.text_input("Regio", d.get("regio", "Nederland"))
-        d["pullfactoren"] = editable_list("Pullfactoren", d.get("pullfactoren", []), "pull", 3)
-        v["belangrijkste_arbeidsvoorwaarden"] = editable_list("Belangrijkste arbeidsvoorwaarden", v.get("belangrijkste_arbeidsvoorwaarden", []), "av", 3)
+        d["pullfactoren"] = editable_list("Pullfactoren", d.get("pullfactoren", []), "pull", 3, hard_max=True)
+        v["belangrijkste_arbeidsvoorwaarden"] = editable_list("Belangrijkste arbeidsvoorwaarden", v.get("belangrijkste_arbeidsvoorwaarden", []), "av", 3, hard_max=True)
         g = d.setdefault("geslacht", {})
         c3, c4 = st.columns(2)
         g["man"] = c3.text_input("Geslacht man", g.get("man", ""))
@@ -1102,7 +1220,15 @@ if st.session_state.data:
 
     st.session_state.data = data
 
-    st.subheader("3. PowerPoint downloaden")
+    st.subheader("3. Kwaliteitscheck")
+    render_quality_check(data)
+    col_clean, col_json = st.columns([1, 3])
+    with col_clean:
+        if st.button("Regels opnieuw toepassen"):
+            st.session_state.data = apply_business_rules(st.session_state.data, "", linkedin_size)
+            st.rerun()
+
+    st.subheader("4. PowerPoint maken")
     try:
         data = apply_business_rules(data, "", linkedin_size)
         st.session_state.data = data
@@ -1112,7 +1238,7 @@ if st.session_state.data:
         filename = f"Startdocument_{klant}_{vacature}.pptx"
         filename = re.sub(r"[^A-Za-z0-9_\-\.]+", "_", filename)
         st.download_button(
-            "Download Startdocument PowerPoint",
+            "Maak & download PowerPoint",
             pptx_bytes,
             filename,
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
