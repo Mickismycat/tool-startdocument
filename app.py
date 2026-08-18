@@ -2224,6 +2224,99 @@ def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
     return len(set(cleaned)) != 3
 
 
+def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    functie = str(facts.get("vacaturenaam", "")).strip()
+    return f"""
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar de BEROEPSDOELGROEP achter deze functietitel:
+Functietitel/functiefamilie: {functie}
+Land: Nederland
+LinkedIn doelgroepgrootte: {linkedin_size}
+
+ZEER BELANGRIJK — BRONSCHEIDING:
+- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
+- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
+- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
+
+Onderzoek uitsluitend:
+1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
+2. gangbare vergelijkbare functietitels;
+3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
+4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
+
+Regels:
+- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
+- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
+- Gebruik echte bedrijfsnamen, nooit placeholders.
+- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
+- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
+
+Geef uitsluitend JSON:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "bronnen": []
+}}
+""".strip()
+
+
+def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
+    functie = str(facts.get("vacaturenaam", "")).strip()
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
+Functie/functiefamilie: {functie}
+Land: Nederland
+
+Onderzoek uitsluitend:
+1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
+2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie/sector.
+
+Bronhiërarchie — gebruik bij iedere run in deze volgorde dezelfde bronsoorten:
+1. CBS / StatLine of andere officiële Nederlandse statistiek;
+2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
+3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
+Gebruik alleen een bredere sector als specifiekere beroepsdata niet beschikbaar is.
+
+Consistentieregels:
+- Baseer man-vrouw én leeftijd zoveel mogelijk op dezelfde beroepsafbakening en dezelfde bronfamilie.
+- Geef de meest recente beschikbare Nederlandse data prioriteit.
+- Rond percentages af op hele procenten.
+- Man + vrouw moet exact 100% zijn.
+- Leeftijdscategorieën moeten samen exact 100% zijn.
+- Gebruik ALTIJD deze leeftijdscategorieën: 15-24, 25-34, 35-49, 50+.
+- Gebruik geen informatie uit vacaturetekst of intake als demografische bron.
+
+Geef uitsluitend JSON:
+{{
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
+  "bronnen": [],
+  "afbakening": "",
+  "toelichting": ""
+}}
+""".strip()
+
+
+def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any], demographics: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(market or {})
+    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
+    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
+    result["geslacht"] = (demographics or {}).get("geslacht", {"man": "", "vrouw": ""})
+    result["leeftijdsverdeling"] = clean_list((demographics or {}).get("leeftijdsverdeling", []))[:4]
+    result["demografie_afbakening"] = (demographics or {}).get("afbakening", "")
+    result["research_bronnen"] = list(dict.fromkeys(
+        clean_list((market or {}).get("bronnen", [])) +
+        clean_list((conditions or {}).get("bronnen", [])) +
+        clean_list((pull or {}).get("bronnen", [])) +
+        clean_list((demographics or {}).get("bronnen", []))
+    ))
+    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden, pullfactoren en demografie zijn als aparte verplichte webonderzoeksvragen uitgevoerd."
+    return result
+
+
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/8: feiten uit vacature en intake halen")
