@@ -2788,6 +2788,219 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
         result = Path(tmp.name).read_bytes()
     return result
 
+
+# -----------------------------------------------------------------------------
+# v2.4.2 overrides: strikte externe pullfactoren + vaste bewerkbare afspraken
+# -----------------------------------------------------------------------------
+
+DEFAULT_AFSPRAKEN = [
+    "XX belt de kandidaten en doet de eerste screening. Mochten de kandidaten passen, worden ze via XX voorgesteld.",
+    "Bij het afwijzen van kandidaten voorziet XX hen van feedback die ze terugkrijgen van de afdeling. Mochten kandidaten uitgenodigd worden voor een gesprek, neemt XX ook contact met hen op om kenbaar te maken dat er een interview met hen in wordt gepland. XX neemt het contact vanaf dit moment over.",
+    "Bij wijzigingen wordt er geschakeld tussen XX, XX en XX.",
+]
+
+# Dit is bewust een gesloten woordenlijst. Webresearch bepaalt de RANGORDE,
+# maar de uiteindelijke labels blijven algemene overstapmotieven en kunnen
+# daardoor nooit per ongeluk vacature- of klantcontext bevatten.
+ALLOWED_PULLFACTORS_V242 = [
+    "Professionele ontwikkeling",
+    "Werk-privébalans",
+    "Autonomie",
+    "Inhoudelijke uitdaging",
+    "Doorgroeimogelijkheden",
+    "Erkenning van expertise",
+    "Flexibiliteit",
+    "Werkzekerheid",
+    "Maatschappelijke relevantie",
+    "Leiderschap en cultuur",
+]
+
+
+def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    data.setdefault("basisgegevens", {})
+    data.setdefault("functieprofiel", {})
+    data.setdefault("kandidaatprofiel", {})
+    data.setdefault("voorwaarden", {})
+    data.setdefault("doelgroepanalyse", {})
+    data.setdefault("sourcingplan", {})
+    data.setdefault("concurrentenanalyse", {})
+    if not clean_list(data.get("afspraken", [])):
+        data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
+    data.setdefault("kwaliteitscontrole", {"ontbrekende_informatie": [], "aannames": [], "waarschuwingen": []})
+    return data
+
+
+def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
+    doelgroep = public_occupation_query(facts)
+    retry = "" if not strict_retry else """
+HERHAALCONTROLE:
+- De vorige uitkomst voldeed niet aan de gesloten woordenlijst.
+- Selecteer opnieuw precies drie labels uit de toegestane lijst.
+"""
+    return f"""
+Je bent onafhankelijk arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar uitsluitend deze beroepsdoelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+
+ONDERZOEKSVRAAG:
+Welke algemene factoren brengen professionals in deze beroepsgroep aantoonbaar in beweging om een andere baan te overwegen? Onderzoek werknemer-/kandidaatonderzoeken, arbeidsmarktstudies en brancheonderzoek. De vacature, werkgever en intake bestaan voor deze opdracht niet.
+
+HARD BRONSCHEIDING:
+- Gebruik verplicht web_search.
+- Gebruik uitsluitend externe arbeidsmarkt-, kandidaat-, werknemer- en brancheonderzoeken.
+- Gebruik GEEN vacaturetekst, vacaturepagina's, klantnaam, werkgever, intake, taken, projecten, locatie, wetgeving, bedrijfscultuur of USP's.
+- Arbeidsmarktkrapte, baankansen, tekorten en schaarste zijn GEEN pullfactoren.
+- Concrete arbeidsvoorwaarden (salaris, pensioen, vakantiedagen, bonus, leaseauto) horen in een andere module en zijn hier GEEN pullfactoren.
+
+Selecteer op basis van het onderzoek precies 3 van deze algemene labels, in volgorde van relevantie voor de doelgroep:
+{json.dumps(ALLOWED_PULLFACTORS_V242, ensure_ascii=False)}
+
+BELANGRIJK:
+- De drie waarden in pullfactoren moeten LETTERLIJK uit bovenstaande lijst komen.
+- Geen eigen formuleringen en geen toelichtende zinnen in de pullfactoren-array.
+- Geen sectorspecifieke/vacaturespecifieke formuleringen zoals 'complexe veiligheidsvraagstukken', 'impact op locatie', 'veiligheidscultuur' of 'organisatie in beweging'.
+- Bronnen mogen wel apart worden opgenomen.
+{retry}
+
+Geef uitsluitend JSON:
+{{
+  "pullfactoren": ["", "", ""],
+  "bronnen": [],
+  "toelichting": ""
+}}
+""".strip()
+
+
+def normalize_pullfactor_label(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "").strip(" •-\n\t.,;:"))
+    if not text:
+        return ""
+    low = text.lower()
+    aliases = {
+        "ontwikkeling": "Professionele ontwikkeling",
+        "professionele groei": "Professionele ontwikkeling",
+        "leren en ontwikkelen": "Professionele ontwikkeling",
+        "work-life balance": "Werk-privébalans",
+        "werk prive balans": "Werk-privébalans",
+        "werk-privé balans": "Werk-privébalans",
+        "vrijheid": "Autonomie",
+        "eigenaarschap": "Autonomie",
+        "uitdaging": "Inhoudelijke uitdaging",
+        "doorgroei": "Doorgroeimogelijkheden",
+        "erkenning": "Erkenning van expertise",
+        "waardering": "Erkenning van expertise",
+        "stabiliteit": "Werkzekerheid",
+        "baanzekerheid": "Werkzekerheid",
+        "sectorzekerheid": "Werkzekerheid",
+        "zingeving": "Maatschappelijke relevantie",
+        "cultuur": "Leiderschap en cultuur",
+        "leiderschap": "Leiderschap en cultuur",
+    }
+    if text in ALLOWED_PULLFACTORS_V242:
+        return text
+    if low in aliases:
+        return aliases[low]
+    # Geen vrije/contextuele formulering doorlaten.
+    return ""
+
+
+def normalize_pullfactors(items: List[str]) -> List[str]:
+    out: List[str] = []
+    for item in clean_list(items):
+        label = normalize_pullfactor_label(item)
+        if label and label not in out:
+            out.append(label)
+    # Alleen bij technisch onvolledige modeloutput aanvullen met neutrale algemene factoren.
+    for fallback in ["Professionele ontwikkeling", "Werk-privébalans", "Autonomie"]:
+        if len(out) >= 3:
+            break
+        if fallback not in out:
+            out.append(fallback)
+    return out[:3]
+
+
+def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
+    cleaned = clean_list(items)
+    if len(cleaned) != 3:
+        return True
+    if pullfactors_contain_company(cleaned, company):
+        return True
+    # Model moet al letterlijk uit de gesloten lijst kiezen.
+    if any(item not in ALLOWED_PULLFACTORS_V242 for item in cleaned):
+        return True
+    return len(set(cleaned)) != 3
+
+
+def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
+    if status:
+        status.write("Stap 1/8: feiten uit vacature en intake halen")
+    facts = call_openai_json(build_fact_extraction_prompt(vacature, intake, extra), use_web=False)
+
+    fallback = extract_basis_fallback(vacature, intake)
+    for fk in ["klantnaam", "vacaturenaam", "salaris"]:
+        if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
+            facts[fk] = fallback[fk]
+    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+
+    extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
+    if extracted_no_go:
+        merged = []
+        for item in clean_list(facts.get("no_go_bedrijven", [])) + extracted_no_go:
+            c = clean_company_name(item)
+            if c and c not in merged:
+                merged.append(c)
+        facts["no_go_bedrijven"] = merged
+
+    if status:
+        status.write("Stap 2/8: doelgroep en concurrenten online onderzoeken")
+    market = call_openai_json(build_target_market_research_prompt(facts, linkedin_size), use_web=True)
+
+    if status:
+        status.write("Stap 3/8: belangrijkste arbeidsvoorwaarden online onderzoeken")
+    conditions = call_openai_json(build_employment_conditions_research_prompt(facts), use_web=True)
+
+    if status:
+        status.write("Stap 4/8: pullfactoren onafhankelijk online onderzoeken")
+    pull = call_openai_json(build_pullfactors_research_prompt(facts), use_web=True)
+    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+        pull = call_openai_json(build_pullfactors_research_prompt(facts, strict_retry=True), use_web=True)
+    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+        raise RuntimeError("Online pullfactoronderzoek leverde geen drie geldige algemene overstapmotieven op.")
+
+    if status:
+        status.write("Stap 5/8: leeftijd en man-vrouwverhouding online onderzoeken")
+    demographics = call_openai_json(build_demographics_research_prompt(facts), use_web=True)
+    research = merge_research_parts(market, conditions, pull, demographics)
+
+    if status:
+        status.write("Stap 6/8: startdocument-content schrijven")
+    data = call_openai_json(build_writer_prompt(facts, research, vacature, intake, linkedin_size, extra), use_web=False)
+
+    if status:
+        status.write("Stap 7/8: presentatiekwaliteit aanscherpen")
+    try:
+        data = call_openai_json(build_presentation_prompt(data, facts, research), use_web=False)
+    except Exception as presentation_error:
+        data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(str(presentation_error))
+
+    if status:
+        status.write("Stap 8/8: business rules toepassen")
+    data = apply_business_rules(data, intake + "\n" + extra, linkedin_size, vacature, extra)
+
+    # Externe research is altijd leidend voor deze velden.
+    data.setdefault("doelgroepanalyse", {})["pullfactoren"] = normalize_pullfactors(research.get("pullfactoren", []))
+    data.setdefault("voorwaarden", {})["belangrijkste_arbeidsvoorwaarden"] = presentation_bullets(normalize_conditions(research.get("belangrijkste_arbeidsvoorwaarden", [])), 3)
+    stable_demo = deterministic_demographics(facts, research)
+    data.setdefault("doelgroepanalyse", {})["geslacht"] = stable_demo.get("geslacht", {"man": "", "vrouw": ""})
+    data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = stable_demo.get("leeftijdsverdeling", normalize_age_distribution(research.get("leeftijdsverdeling", [])))
+    data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
+
+    # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
+    data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.2: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> fixed editable agreements"
+    return ensure_core_keys(data)
+
+
 st.title("📄 Startdocument Generator")
 st.caption("Upload de vacature en intake. Controleer de preview en download daarna een nette PowerPoint in de vaste Cooble-template.")
 
