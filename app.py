@@ -1706,11 +1706,17 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je geeft uitsluitend geldige JSON terug. Geen markdown.") -> Dict[str, Any]:
-    """Robuuste centrale OpenAI-call.
+    """Centrale OpenAI-call.
 
-    Voor webresearch gebruiken we Responses API + het actuele `web_search`-tooltype.
-    JSON mode wordt op API-niveau afgedwongen via `text.format`, zodat de response
-    syntactisch geldige JSON is en niet meer via vrije tekst hoeft te worden gerepareerd.
+    Belangrijk: OpenAI Web Search kan niet gecombineerd worden met JSON mode in
+    dezelfde request. Daarom bestaat webresearch bewust uit twee stappen:
+
+    1. Responses API + ``web_search`` verzamelt actuele broninformatie als tekst.
+    2. Een aparte niet-web call zet uitsluitend die onderzoeksnotities om naar het
+       JSON-object dat de oorspronkelijke opdracht vraagt.
+
+    Zo blijft webresearch verplicht, maar voorkomen we de 400-fout
+    ``Web Search cannot be used with JSON mode``.
     """
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     if not api_key:
@@ -1720,56 +1726,97 @@ def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je ge
     model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
 
     if use_web:
-        web_prompt = f"""
+        research_prompt = f"""
 {prompt}
 
-TECHNISCHE OUTPUTREGEL:
-- Geef uitsluitend één geldig JSON-object terug.
-- Geen markdown, geen codeblok, geen tekst voor of na het JSON-object.
+WEBRESEARCH-INSTRUCTIE:
+- Voer daadwerkelijk live webonderzoek uit met meerdere relevante bronnen.
+- Gebruik uitsluitend informatie uit dat externe onderzoek voor de gevraagde arbeidsmarkt-/doelgroepvelden.
+- Gebruik GEEN vacaturetekst of werkgeverscontext als vervanging voor ontbrekende externe gegevens.
+- Schrijf eerst compacte onderzoeksnotities met concrete bevindingen, cijfers, categorieën en broncontext.
+- Je hoeft in deze stap GEEN JSON te produceren.
+""".strip()
+
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": "Je bent een nauwkeurige Nederlandse arbeidsmarktresearcher. Gebruik live webonderzoek en baseer je bevindingen op externe bronnen.",
+                    },
+                    {"role": "user", "content": research_prompt},
+                ],
+                tools=[{"type": "web_search"}],
+                tool_choice="required",
+                max_output_tokens=3500,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
+                "De tool stopt bewust in plaats van gegevens uit de vacature over te nemen. "
+                f"Technische melding: {exc}"
+            ) from exc
+
+        if getattr(response, "status", None) == "incomplete":
+            reason = getattr(getattr(response, "incomplete_details", None), "reason", "onbekend")
+            raise RuntimeError(
+                "Online arbeidsmarktonderzoek was onvolledig. "
+                f"Technische melding: {reason}"
+            )
+
+        research_text = (getattr(response, "output_text", "") or "").strip()
+        if not research_text:
+            raise RuntimeError(
+                "Online arbeidsmarktonderzoek leverde geen bruikbare onderzoeksnotities op."
+            )
+
+        # Tweede stap: géén webtool meer. Alleen de gevonden research structureren.
+        structure_prompt = f"""
+OORSPRONKELIJKE OPDRACHT:
+{prompt}
+
+LIVE WEBRESEARCH (DIT IS DE ENIGE EXTERNE FEITENBRON VOOR DEZE STAP):
+{research_text}
+
+Zet de onderzoeksresultaten om naar precies het JSON-object dat de oorspronkelijke opdracht vraagt.
+Regels:
+- Gebruik alleen feiten en conclusies die door de LIVE WEBRESEARCH hierboven worden gedragen.
+- Vul ontbrekende externe informatie niet aan vanuit de vacature, werkgever of vrije aannames.
+- Als een gevraagd veld onvoldoende wordt ondersteund, gebruik een lege lijst, lege string of null passend bij het gevraagde JSON-formaat.
+- Geef uitsluitend één geldig JSON-object terug; geen markdown en geen toelichting buiten JSON.
 """.strip()
 
         last_error = None
-        for attempt in range(2):
+        for _ in range(2):
             try:
-                response = client.responses.create(
+                chat = client.chat.completions.create(
                     model=model,
-                    input=[
+                    messages=[
                         {
                             "role": "system",
-                            "content": system + " Gebruik live webonderzoek en geef alleen geldige JSON terug.",
+                            "content": "Je structureert aangeleverde webresearch. Je geeft uitsluitend geldige JSON terug en verzint geen ontbrekende feiten.",
                         },
-                        {"role": "user", "content": web_prompt},
+                        {"role": "user", "content": structure_prompt},
                     ],
-                    tools=[{"type": "web_search"}],
-                    tool_choice="required",
-                    text={"format": {"type": "json_object"}},
-                    max_output_tokens=2500,
+                    response_format={"type": "json_object"},
                 )
-
-                if getattr(response, "status", None) == "incomplete":
-                    reason = getattr(getattr(response, "incomplete_details", None), "reason", "onbekend")
-                    raise RuntimeError(f"OpenAI-response onvolledig: {reason}")
-
-                output_text = (getattr(response, "output_text", "") or "").strip()
-                if not output_text:
-                    raise RuntimeError("OpenAI gaf geen tekstoutput terug.")
-
-                data = json.loads(output_text)
+                content = chat.choices[0].message.content or "{}"
+                data = json.loads(content)
                 if not isinstance(data, dict):
-                    raise RuntimeError("OpenAI gaf geen JSON-object terug.")
+                    raise ValueError("Response is geen JSON-object.")
                 data.setdefault("_meta", {})["web_search_used"] = True
                 return data
             except Exception as exc:
                 last_error = exc
-                web_prompt += "\n\nHERSTELPOGING: geef nu uitsluitend syntactisch geldige JSON volgens het gevraagde formaat."
+                structure_prompt += "\n\nHERSTEL: geef uitsluitend syntactisch geldige JSON, zonder tekst erbuiten."
 
         raise RuntimeError(
-            "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
-            "De tool stopt bewust in plaats van gegevens uit de vacature over te nemen. "
+            "Het online onderzoek is uitgevoerd, maar kon niet betrouwbaar naar JSON worden omgezet. "
             f"Technische melding: {last_error}"
         ) from last_error
 
-    # Niet-webcalls blijven via Chat Completions JSON mode lopen.
+    # Niet-webcalls: JSON mode is hier wel passend.
     chat = client.chat.completions.create(
         model=model,
         messages=[

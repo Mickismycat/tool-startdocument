@@ -1,12 +1,13 @@
-# Startdocument Generator v2.4.7
+# Startdocument Generator v2.4.8
 
-Hotfix op v2.4.6 voor de fout `Expecting ',' delimiter` tijdens online arbeidsvoorwaardenonderzoek.
+Hotfix op v2.4.7 voor de fout `Web Search cannot be used with JSON mode`.
 
 Wijzigingen:
-- Webresearch gebruikt nu het actuele OpenAI Responses API `web_search` tooltype.
-- JSON wordt op API-niveau afgedwongen met `text.format = json_object`.
-- Websearch blijft verplicht; er is geen fallback naar vacaturetekst of algemene modelkennis.
-- Automatische herstelpoging bij een onvolledige/technisch mislukte response.
-- Alle functionaliteit van v2.4.6 blijft behouden.
+- Webresearch en JSON-output zijn nu technisch gescheiden in twee stappen.
+- Stap 1 gebruikt OpenAI Responses API + `web_search` verplicht voor live internetonderzoek.
+- Stap 2 structureert uitsluitend de gevonden onderzoeksnotities naar geldig JSON zonder webtool.
+- Er is geen fallback naar vacaturetekst voor doelgroep-, pullfactor-, arbeidsvoorwaarden- of demografieonderzoek.
+- Bij mislukte webresearch stopt de tool bewust met een duidelijke foutmelding.
+- Extra syntax- en functiedefinitiecontrole uitgevoerd.
 
 Upload de volledige inhoud naar GitHub en laat Streamlit opnieuw deployen.
