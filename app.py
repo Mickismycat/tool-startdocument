@@ -2900,6 +2900,12 @@ def normalize_pullfactor_label(text: str) -> str:
         return text
     if low in aliases:
         return aliases[low]
+    for key, value in aliases.items():
+        if key in low:
+            return value
+    for allowed in ALLOWED_PULLFACTORS_V242:
+        if allowed.lower() in low:
+            return allowed
     # Geen vrije/contextuele formulering doorlaten.
     return ""
 
@@ -2962,10 +2968,13 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     if status:
         status.write("Stap 4/8: pullfactoren onafhankelijk online onderzoeken")
     pull = call_openai_json(build_pullfactors_research_prompt(facts), use_web=True)
-    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+    normalized_pull = normalize_pullfactors(pull.get("pullfactoren", []))
+    if pullfactors_are_invalid(normalized_pull, facts.get("klantnaam", "")):
         pull = call_openai_json(build_pullfactors_research_prompt(facts, strict_retry=True), use_web=True)
-    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+        normalized_pull = normalize_pullfactors(pull.get("pullfactoren", []))
+    if pullfactors_are_invalid(normalized_pull, facts.get("klantnaam", "")):
         raise RuntimeError("Online pullfactoronderzoek leverde geen drie geldige algemene overstapmotieven op.")
+    pull["pullfactoren"] = normalized_pull
 
     if status:
         status.write("Stap 5/8: leeftijd en man-vrouwverhouding online onderzoeken")

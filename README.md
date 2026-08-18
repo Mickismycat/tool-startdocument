@@ -8,3 +8,8 @@ Wijzigingen:
 
 ## Deploy
 Upload alle bestanden en mappen naar dezelfde GitHub-repository en commit. Streamlit redeployt daarna automatisch.
+
+
+## v2.4.3
+- Fix: valideert genormaliseerde pullfactorlabels in plaats van vrije webformuleringen.
+- Webresearch blijft verplicht; natuurlijke varianten worden naar de gesloten pullfactorlijst vertaald.
