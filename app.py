@@ -36,7 +36,7 @@ def get_template_path() -> Path:
 DEFAULT_MODEL = "gpt-4.1"
 
 
-# v1.9: afzonderlijke webonderzoeken voor doelgroep/concurrenten, arbeidsvoorwaarden, pullfactoren en demografie.
+# v2.0: doelgroep-research volledig losgekoppeld van vacature-inhoud; pullfactoren streng gevalideerd als echte overstapmotieven.
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/7: feiten uit vacature en intake halen")
@@ -68,8 +68,10 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     if status:
         status.write("Stap 4/8: pullfactoren online onderzoeken")
     pull = call_openai_json(build_pullfactors_research_prompt(facts), use_web=True)
-    if pullfactors_contain_company(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
         pull = call_openai_json(build_pullfactors_research_prompt(facts, strict_retry=True), use_web=True)
+    if pullfactors_are_invalid(pull.get("pullfactoren", []), facts.get("klantnaam", "")):
+        raise RuntimeError("Online onderzoek leverde geen geldige pullfactoren op. De tool stopt bewust in plaats van vacature-inhoud of arbeidsmarktkrapte als pullfactor te gebruiken.")
 
     if status:
         status.write("Stap 5/8: leeftijd en man-vrouwverhouding online onderzoeken")
@@ -96,7 +98,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     data.setdefault("doelgroepanalyse", {})["geslacht"] = research.get("geslacht", {"man": "", "vrouw": ""})
     data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = normalize_age_distribution(research.get("leeftijdsverdeling", []))
     data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v1.9: facts -> required web market -> required web conditions -> required web pull -> required web demographics -> writer -> presentation"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.0: facts -> occupation-only web market -> web conditions -> validated web pull -> web demographics -> writer -> presentation"
     return data
 
 
@@ -1764,7 +1766,7 @@ def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
     return f"""
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse arbeidsmarkt voor deze doelgroep:
 Functie/doelgroep: {facts.get('vacaturenaam','')}
-Locatie/regio: {facts.get('locatie','Nederland')}
+Land: Nederland
 
 Onderzoek uitsluitend deze vraag:
 WELKE 3 ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP IN HET ALGEMEEN HET BELANGRIJKST WANNEER ZIJ IN DIENST ZIJN?
@@ -1788,33 +1790,42 @@ Geef uitsluitend JSON:
 
 
 def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
-    functie = facts.get('vacaturenaam','')
-    locatie = facts.get('locatie','Nederland')
+    functie = str(facts.get("vacaturenaam", "")).strip()
     retry_text = "" if not strict_retry else """
 EXTRA CONTROLE BIJ DEZE HERHALING:
-- In een eerdere poging kwam toch een klant/werkgever in de pullfactoren terug.
-- Controleer elk item vóór het antwoord: géén enkele bedrijfsnaam, werkgever of klant mag voorkomen.
-- Formuleer volledig doelgroepgeneriek.
+- Een eerdere uitkomst bevatte een ongeldige pullfactor.
+- Verwijder arbeidsmarktkrapte, baankansen, tekort/schaarste, vacature-specifieke inhoud, bedrijfsnamen en werkgeverseigenschappen.
+- Kies uitsluitend echte overstapmotieven/vacature-attractoren die uit extern doelgroep- of kandidatenonderzoek blijken.
 """
     return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse BEROEPSDOELGROEP voor:
-Functie/functiefamilie: {functie}
-Locatie/regio: {locatie}
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse BEROEPSDOELGROEP achter deze functietitel:
+Functietitel/functiefamilie: {functie}
+Land: Nederland
 
 Onderzoek uitsluitend deze vraag:
-WAT BRENGT DEZE BEROEPSDOELGROEP IN BEWEGING OM NAAR EEN ANDERE BAAN TE KIJKEN, EN WAT WILLEN ZIJ GRAAG TERUGZIEN IN EEN VACATURE?
+WELKE 3 FACTOREN BRENGEN DEZE BEROEPSDOELGROEP DAADWERKELIJK IN BEWEGING OM EEN ANDERE BAAN TE OVERWEGEN, EN WELKE NIET-FINANCIËLE ELEMENTEN WILLEN ZIJ DAAROM GRAAG TERUGZIEN IN EEN VACATURE?
 
-Regels:
-- Gebruik VERPLICHT web_search en baseer het antwoord op externe arbeidsmarktbronnen, werknemers-/kandidaatonderzoek, brancheonderzoek en doelgroepstudies.
-- Onderzoek de BEROEPSGROEP, niet de werkgever achter een vacature.
-- Gebruik de vacature, intake, werkgever, klantnaam en bedrijfscultuur van één specifieke organisatie NIET als bron voor het antwoord.
-- Noem NOOIT een bedrijfsnaam, klantnaam of werkgever in een pullfactor.
-- Pullfactoren gaan over overstapmotieven en vacature-attractoren; het zijn geen concrete arbeidsvoorwaarden.
-- Geef precies 3 nette, natuurlijke formuleringen. Elk item is óf een duidelijk zelfstandig label van 2-5 woorden óf een korte natuurlijke zin van maximaal 9 woorden.
-- Vermijd losse, contextloze woorden zoals "certificering", "ontwikkeling" of "cultuur". Schrijf bijvoorbeeld "Professionele ontwikkeling", "Meer inhoudelijke autonomie" of "Zichtbare maatschappelijke impact".
-- Eén onderwerp per item; geen slash-combinaties en geen opsomming binnen één bullet.
-- Formuleer zelfverzekerd en professioneel, passend in een PowerPoint.
-- Voeg bronnen/domeinen toe.
+BRONSCHEIDING:
+- Gebruik VERPLICHT web_search en uitsluitend externe arbeidsmarkt-, kandidaten-, werknemers- en brancheonderzoeken.
+- Gebruik GEEN vacaturetekst, intake, klantnaam, werkgever, taken, projecten, wetgeving, cultuurclaims of USP's van één organisatie.
+- De functietitel/functiefamilie dient alleen om de juiste beroepsgroep te vinden.
+
+WAT IS WEL EEN PULLFACTOR:
+- een overstapmotief of vacature-attractor, zoals meer autonomie, inhoudelijke uitdaging, professionele ontwikkeling, doorgroeimogelijkheden, erkenning, zichtbare impact, strategische invloed of betere werk-privébalans — alleen wanneer onderzoek dit voor de doelgroep ondersteunt.
+
+WAT IS GEEN PULLFACTOR:
+- arbeidsmarktkansen, veel vacatures, schaarste, personeelstekort, baanzekerheid door krapte of hoge vraag;
+- salaris, vakantiedagen, pensioen, leaseauto of andere concrete arbeidsvoorwaarden;
+- kenmerken van de huidige vacature of werkgever;
+- specifieke werkzaamheden/wetgeving/projecten uit één vacature.
+
+Outputregels:
+- Precies 3 pullfactoren.
+- Elk item is één helder onderwerp in 2-7 natuurlijke woorden; maximaal 9 woorden.
+- Geen samengestelde bullets.
+- Formuleer als aantrekkingsfactor, niet als arbeidsmarktconstatering.
+- Noem nooit een bedrijf of klant.
+- Voeg gebruikte bronnen/domeinen toe.
 {retry_text}
 Geef uitsluitend JSON:
 {{
@@ -1840,11 +1851,27 @@ def pullfactors_contain_company(items: List[str], company: str) -> bool:
     return False
 
 
+def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
+    """Blokkeer uitkomsten die geen echte pullfactor zijn of vacature/werkgever-specifiek ogen."""
+    forbidden = [
+        r"arbeidsmarkt", r"baankans", r"baankansen", r"tekort", r"schaarste", r"veel vacatures",
+        r"hoge vraag", r"gewild", r"krapte", r"personeelstekort", r"baanzekerheid door",
+        r"salaris", r"pensioen", r"vakantiedag", r"leaseauto", r"eindejaarsuitkering",
+    ]
+    if pullfactors_contain_company(items, company):
+        return True
+    for item in clean_list(items):
+        low = item.lower()
+        if any(re.search(p, low) for p in forbidden):
+            return True
+    return len(clean_list(items)) != 3
+
+
 def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
     return f"""
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
 Functie/functiefamilie: {facts.get('vacaturenaam','')}
-Locatie/regio: {facts.get('locatie','Nederland')}
+Land: Nederland
 
 Onderzoek uitsluitend:
 1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
@@ -1877,16 +1904,30 @@ Geef uitsluitend JSON:
 """.strip()
 
 def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    functie = str(facts.get("vacaturenaam", "")).strip()
     return f"""
-Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar deze doelgroep:
-Functie: {facts.get('vacaturenaam','')}
-Locatie/regio: {facts.get('locatie','Nederland')}
-Nuances: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
-Manager nadruk: {json.dumps(facts.get('manager_nadruk', []), ensure_ascii=False)}
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar de BEROEPSDOELGROEP achter deze functietitel:
+Functietitel/functiefamilie: {functie}
+Land: Nederland
 LinkedIn doelgroepgrootte: {linkedin_size}
 
-Onderzoek: specifieke doelgroepomschrijving, vergelijkbare functietitels, bedrijven waar deze doelgroep werkt en concurrenten op bedrijfsniveau. Onderzoek hier GEEN leeftijds- of genderverdeling; dat gebeurt in een aparte demografie-stap.
-Gebruik echte bedrijfsnamen, nooit placeholders. Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
+ZEER BELANGRIJK — BRONSCHEIDING:
+- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
+- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
+- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
+
+Onderzoek uitsluitend:
+1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
+2. gangbare vergelijkbare functietitels;
+3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
+4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
+
+Regels:
+- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
+- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
+- Gebruik echte bedrijfsnamen, nooit placeholders.
+- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
+- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
 
 Geef uitsluitend JSON:
 {{

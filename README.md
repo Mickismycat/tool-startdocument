@@ -1,11 +1,13 @@
-# Startdocument Generator v1.9
+# Startdocument Generator v2.0
 
-Wijzigingen in v1.9:
-- Pullfactoren komen verplicht uit extern webonderzoek en mogen geen klant- of bedrijfsnaam bevatten.
-- Leeftijdsverdeling en man-vrouwverhouding krijgen een aparte verplichte webresearch-stap.
-- Demografisch onderzoek gebruikt een vaste bronhiërarchie (CBS/StatLine -> UWV/ROA/SBB/beroepsorganisaties -> gerenommeerd sectoronderzoek).
-- Leeftijd en geslacht worden niet meer vrij geschat of met standaardpercentages ingevuld.
-- Leeftijdscategorieën zijn vast: 15-24, 25-34, 35-49, 50+.
-- Geen interne opslag van onderzoeksresultaten.
+Deze versie scheidt doelgroep-research volledig van de vacature-inhoud.
 
-Upload alle bestanden en mappen naar GitHub. Streamlit redeployt daarna automatisch.
+Belangrijkste wijzigingen:
+- Doelgroep/concurrenten worden alleen onderzocht vanuit functietitel/functiefamilie + Nederland.
+- Intake, werkgever, taken, USP's en vacaturevoorwaarden worden niet aan doelgroep-research doorgegeven.
+- Pullfactoren zijn uitsluitend echte overstapmotieven/vacature-attractoren uit extern onderzoek.
+- Arbeidsmarktkrapte, baankansen en personeelstekort worden expliciet geweigerd als pullfactor.
+- Ongeldige pullfactoren triggeren automatisch één heronderzoek; daarna stopt de tool liever dan verkeerde informatie te tonen.
+- Arbeidsvoorwaarden en demografie blijven aparte verplichte webonderzoeken.
+
+Upload alle bestanden en de map `templates` naar dezelfde GitHub-repository en laat Streamlit opnieuw deployen.
