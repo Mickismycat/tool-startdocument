@@ -1,12 +1,13 @@
-# Startdocument Generator v2.2
+# Startdocument Generator v2.3
 
-Deze versie bundelt de belangrijkste correcties:
+Deze versie gebruikt het opnieuw aangeleverde, correcte **Cooble-template** als vaste layout.
 
-- Cooble-template blijft leidend: de app vult alleen placeholders en herschrijft de layout niet.
-- Aanpak-slide wordt verwijderd.
-- Doelgroep- en pullfactoronderzoek krijgt geen klantnaam, intake of vacaturecontext meer mee.
-- Pullfactoren worden gevalideerd op echte overstapmotieven/vacature-attractoren.
-- Arbeidsvoorwaarden blijven generieke arbeidsmarktcategorieën.
-- Leeftijdsverdeling blijft als horizontale balkvisual in het bestaande placeholdervlak.
+## Belangrijkste wijzigingen
+- Het template bevat vaste placeholders op de exacte bestaande tekstposities.
+- De PowerPoint-code verandert **geen** fonts, lettergroottes, posities, marges of regelafstand.
+- Alleen placeholdertekst wordt vervangen; de leeftijdsverdeling gebruikt één vast beeldanker.
+- Man/vrouw en leeftijd komen uitsluitend uit verplicht webonderzoek; er zijn geen vaste, verzonnen demografische tabellen meer.
+- Demografie wordt afgerond in stappen van 5% voor meer stabiliteit tussen runs.
+- Als demografisch webonderzoek onvolledig is, volgt één automatische herhaalpoging; daarna stopt de tool in plaats van lege of verzonnen percentages te tonen.
 
 Upload alle bestanden en mappen naar GitHub, inclusief `templates/Startdocument_Cooble_template.pptx`.

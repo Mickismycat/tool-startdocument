@@ -2563,134 +2563,230 @@ Geef uitsluitend JSON:
 """.strip()
 
 
-def set_text_preserve_template(shape, text: str) -> None:
-    """Vul een placeholder zonder de template-styling opnieuw te ontwerpen."""
+
+# -----------------------------------------------------------------------------
+# v2.3: juiste Cooble-template is leidend. Alleen placeholders worden ingevuld.
+# Geen lettergrootte, positie, marges, regelafstand of static layout aanpassen.
+# -----------------------------------------------------------------------------
+
+def _pct_int(value: Any):
+    m = re.search(r"(\d{1,3})(?:[.,]\d+)?\s*%?", str(value or ""))
+    if not m:
+        return None
+    return max(0, min(100, int(round(float(m.group(1))))))
+
+
+def _round_to_5(value: int) -> int:
+    return max(0, min(100, int(round(value / 5.0) * 5)))
+
+
+def _normalize_gender_web(gender: Dict[str, Any]) -> Dict[str, str]:
+    """Normaliseer webresearch naar stabiele afgeronde percentages; verzin geen benchmark."""
+    man = _pct_int((gender or {}).get("man", ""))
+    vrouw = _pct_int((gender or {}).get("vrouw", ""))
+    if man is None and vrouw is None:
+        return {"man": "", "vrouw": ""}
+    if man is None:
+        man = 100 - vrouw
+    if vrouw is None:
+        vrouw = 100 - man
+    # Kleine bron-/afrondingsverschillen worden gestabiliseerd naar stappen van 5%.
+    man = _round_to_5(man)
+    vrouw = 100 - man
+    return {"man": f"{man}%", "vrouw": f"{vrouw}%"}
+
+
+def _normalize_age_web(items: List[str]) -> List[str]:
+    wanted = ["15-24", "25-34", "35-49", "50+"]
+    parsed: Dict[str, int] = {}
+    for raw in clean_list(items):
+        compact = str(raw).replace(" ", "")
+        pct = _pct_int(raw)
+        if pct is None:
+            continue
+        for label in wanted:
+            if label in compact:
+                parsed[label] = pct
+                break
+    if len(parsed) != 4:
+        return []
+    rounded = {k: _round_to_5(v) for k, v in parsed.items()}
+    diff = 100 - sum(rounded.values())
+    # Corrigeer alleen het afrondingsverschil op de grootste categorie.
+    largest = max(rounded, key=rounded.get)
+    rounded[largest] = max(0, rounded[largest] + diff)
+    return [f"{k}: {rounded[k]}%" for k in wanted]
+
+
+def build_demographics_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
+    doelgroep = public_occupation_query(facts)
+    retry = "" if not strict_retry else """
+DIT IS EEN HERHAALPOGING OMDAT DE EERSTE DATA ONVOLLEDIG WAS.
+Je MOET vier leeftijdspercentages en een man/vrouwverdeling teruggeven.
+Gebruik desnoods één niveau bredere officiële beroepsklasse, maar blijf bij dezelfde afbakening voor beide analyses.
+"""
+    return f"""
+Je bent een arbeidsmarktonderzoeker. Doe ACTUEEL WEBONDERZOEK naar uitsluitend de DEMOGRAFIE van deze Nederlandse beroepsdoelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+
+BELANGRIJK:
+- Je krijgt bewust GEEN werkgever, vacaturetekst, intake, bedrijfsnaam of concrete vacaturecontext.
+- Gebruik die informatie dus ook niet in je onderzoek.
+- Onderzoek de beroepsgroep/functiefamilie als geheel.
+
+Zoek twee dingen:
+1. man-vrouwverhouding;
+2. leeftijdsverdeling.
+
+VASTE BRONVOLGORDE:
+1. CBS / StatLine;
+2. UWV, ROA, SBB of een officiële branche-/beroepsorganisatie;
+3. pas daarna een gerenommeerde Nederlandse arbeidsmarktbron.
+
+CONSISTENTIEREGELS:
+- Gebruik voor man/vrouw en leeftijd dezelfde beroepsafbakening waar mogelijk.
+- Als exacte functiedata niet bestaan, kies één aantoonbaar dichtstbijzijnde officiële beroepsklasse en gebruik die consequent.
+- Gebruik de meest recente Nederlandse cijfers die je kunt vinden.
+- Maak geen vrije AI-schatting.
+- Man + vrouw = exact 100%.
+- Leeftijd = exact deze vier categorieën en samen 100%: 15-24, 25-34, 35-49, 50+.
+- Rond de gevonden cijfers af op hele procenten; de applicatie normaliseert daarna voor presentatiestabiliteit.
+- Geef minimaal één concrete bron/domein op.
+{retry}
+
+Geef uitsluitend JSON:
+{{
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["15-24: 0%", "25-34: 0%", "35-49: 0%", "50+: 0%"],
+  "bronnen": [],
+  "afbakening": "",
+  "toelichting": ""
+}}
+""".strip()
+
+
+def deterministic_demographics(facts: Dict[str, Any], research: Dict[str, Any]) -> Dict[str, Any]:
+    """v2.3: uitsluitend webdata; geen zelfverzonnen vaste functietabellen."""
+    gender = _normalize_gender_web((research or {}).get("geslacht", {}))
+    age = _normalize_age_web((research or {}).get("leeftijdsverdeling", []))
+    if not gender.get("man") or not gender.get("vrouw") or len(age) != 4:
+        retry = call_openai_json(build_demographics_research_prompt(facts, strict_retry=True), use_web=True)
+        gender = _normalize_gender_web(retry.get("geslacht", {}))
+        age = _normalize_age_web(retry.get("leeftijdsverdeling", []))
+    if not gender.get("man") or not gender.get("vrouw") or len(age) != 4:
+        raise RuntimeError(
+            "Demografisch webonderzoek leverde geen complete man/vrouw- en leeftijdsverdeling op. "
+            "De tool stopt bewust in plaats van percentages te verzinnen."
+        )
+    return {
+        "geslacht": gender,
+        "leeftijdsverdeling": age,
+        "afbakening": (research or {}).get("demografie_afbakening", "")
+    }
+
+
+def _strip_target_size(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^[±+\-\s]+", "", text)
+    return text
+
+
+def _list3(items: Any) -> List[str]:
+    vals = clean_list(items if isinstance(items, list) else [])
+    return (vals + ["", "", ""])[:3]
+
+
+def _replace_tokens_in_text_frame(shape, replacements: Dict[str, str]) -> None:
+    """Vervang tekst in bestaande runs. Geen clear(), geen nieuwe fonts, geen nieuwe paragrafen."""
     if not (hasattr(shape, "text_frame") and shape.has_text_frame):
         return
-    tf = shape.text_frame
-    # Sla eerste runstijl op als die direct in template is gezet.
-    font_name = font_size = font_bold = font_italic = font_color = None
-    try:
-        for p in tf.paragraphs:
-            for r in p.runs:
-                if r.text is not None:
-                    font_name = r.font.name
-                    font_size = r.font.size
-                    font_bold = r.font.bold
-                    font_italic = r.font.italic
-                    if r.font.color and r.font.color.type == 1:
-                        font_color = r.font.color.rgb
-                    raise StopIteration
-    except StopIteration:
-        pass
-    tf.clear()
-    lines = str(text or "").split("\n") if text else [""]
-    for idx, line in enumerate(lines):
-        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
-        run = p.add_run()
-        run.text = line
-        if font_name:
-            run.font.name = font_name
-        if font_size:
-            run.font.size = font_size
-        if font_bold is not None:
-            run.font.bold = font_bold
-        if font_italic is not None:
-            run.font.italic = font_italic
-        if font_color:
-            run.font.color.rgb = font_color
+    for paragraph in shape.text_frame.paragraphs:
+        for run in paragraph.runs:
+            txt = run.text
+            if not txt or "{{" not in txt:
+                continue
+            for token, value in replacements.items():
+                if token in txt:
+                    txt = txt.replace(token, str(value or ""))
+            run.text = txt
 
 
-def render_shape_v22(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
+def _render_template_shape_v23(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
     if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-        for subshape in shape.shapes:
-            render_shape_v22(slide, subshape, data, replacements)
+        for child in shape.shapes:
+            _render_template_shape_v23(slide, child, data, replacements)
         return
     if not (hasattr(shape, "text_frame") and shape.has_text_frame):
         return
     original = full_text(shape)
-    if not original or "{{" not in original:
-        return
-    stripped = original.strip()
-    # Leeftijdsverdeling is de enige visuele vervanging; de positie blijft die van de placeholder.
     if "{{leeftijdsverdeling}}" in original:
         left, top, width, height = shape.left, shape.top, shape.width, shape.height
-        shape.text_frame.clear()
+        # De placeholder is alleen een anker; hij wordt onzichtbaar gemaakt.
+        for p in shape.text_frame.paragraphs:
+            for r in p.runs:
+                r.text = ""
         img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
-        pic_w = int(width * 0.94)
-        pic_h = int(height * 0.94)
-        slide.shapes.add_picture(img, left + int((width - pic_w) / 2), top + int((height - pic_h) / 2), width=pic_w, height=pic_h)
+        slide.shapes.add_picture(img, left, top, width=width, height=height)
         return
-    # Eerste slide: onderste klantnaam-placeholder wordt gebruikt voor vacaturetitel.
-    if stripped == "{{klantnaam}}" and getattr(shape, "top", 0) > Emu(7600000):
-        set_text_preserve_template(shape, get_nested_v12(data, "basisgegevens.vacaturenaam", ""))
-        return
-    if stripped in BULLET_PLACEHOLDERS:
-        path, _style = BULLET_PLACEHOLDERS[stripped]
-        set_text_preserve_template(shape, bullets(get_nested_v12(data, path, [])))
-        return
-    if stripped in PLAIN_PLACEHOLDERS:
-        path, _style = PLAIN_PLACEHOLDERS[stripped]
-        set_text_preserve_template(shape, str(get_nested_v12(data, path, "")))
-        return
-    text = original
-    if "DOELGROEP:" in text and "{{doelgroep_titel}}" in text:
-        value = get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")
-        # Verwijder het label DOELGROEP: zoals eerder afgesproken.
-        text = value
-    else:
-        for key, value in replacements.items():
-            text = text.replace(key, str(value or ""))
-    set_text_preserve_template(shape, text.strip())
+    _replace_tokens_in_text_frame(shape, replacements)
 
 
 def generate_pptx(data: Dict[str, Any]) -> bytes:
-    """v2.2: Cooble-template-first. Alleen placeholders worden vervangen; static layout blijft onaangetast."""
+    """v2.3: vul uitsluitend placeholders in het goedgekeurde Cooble-template."""
     template_path = get_template_path()
     prs = Presentation(str(template_path))
-    delete_slides_by_exact_title(prs, {"AANPAK"})
-    afspraken = data.get("afspraken") or []
-    concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
-    concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
+
+    tasks = _list3(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", []))
+    eisen = _list3(get_nested_v12(data, "kandidaatprofiel.eisen", []))
+    voorkeuren = _list3(get_nested_v12(data, "kandidaatprofiel.voorkeuren", []))
+    usps = _list3(get_nested_v12(data, "functieprofiel.usp_functie", []))
+    pulls = _list3(normalize_pullfactors(get_nested_v12(data, "doelgroepanalyse.pullfactoren", [])))
+    voorwaarden = _list3(normalize_conditions(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", [])))
+    afspraken = (clean_list(data.get("afspraken", [])) + ["", "", ""])[:3]
+    nogo = clean_list(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", []))
+
     replacements = {
-        "{{klantnaam}}": get_nested_v12(data, "basisgegevens.klantnaam"),
-        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam"),
-        "{{datum}}": get_nested_v12(data, "basisgegevens.datum") or date.today().strftime("%d-%m-%Y"),
+        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam", ""),
+        "{{datum}}": get_nested_v12(data, "basisgegevens.datum", "") or date.today().strftime("%d-%m-%Y"),
         "{{intake_samenvatting}}": presentation_summary(data.get("intake_samenvatting", "")),
-        "{{sourcingplan_strategie}}": get_nested_v12(data, "sourcingplan.strategie"),
-        "{{sourcingplan_doelgroep}}": get_nested_v12(data, "sourcingplan.doelgroep"),
-        "{{concurrentenanalyse}}": concurrenten_text,
-        "{{zoekrichting}}": bullets(get_nested_v12(data, "sourcingplan.zoekrichting", [])),
-        "{{aanpak_toelichting}}": get_nested_v12(data, "sourcingplan.toelichting"),
-        "{{doelgroep_titel}}": get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam"),
-        "{{taken_verantwoordelijkheden}}": bullets(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", [])),
-        "{{eisen}}": bullets(get_nested_v12(data, "kandidaatprofiel.eisen", [])),
-        "{{voorkeuren}}": bullets(get_nested_v12(data, "kandidaatprofiel.voorkeuren", [])),
-        "{{no_go_sourcing}}": bullets(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", [])),
-        "{{doelgroepgrootte}}": get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
-        "{{doelgroep_regio}}": get_nested_v12(data, "doelgroepanalyse.regio") or "Nederland",
-        "{{salaris}}": get_nested_v12(data, "basisgegevens.salaris"),
-        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie"),
-        "{{uren}}": get_nested_v12(data, "basisgegevens.uren"),
-        "{{usp_functie}}": bullets(get_nested_v12(data, "functieprofiel.usp_functie", [])),
-        "{{pullfactoren}}": bullets(normalize_pullfactors(get_nested_v12(data, "doelgroepanalyse.pullfactoren", []))),
-        "{{belangrijkste_arbeidsvoorwaarden}}": bullets(normalize_conditions(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", []))),
-        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man"),
-        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw"),
-        "{{leeftijdsverdeling}}": bullets(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", [])),
-        "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
-        "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
-        "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
+        "{{taak_1}}": tasks[0], "{{taak_2}}": tasks[1], "{{taak_3}}": tasks[2],
+        "{{eis_1}}": eisen[0], "{{eis_2}}": eisen[1], "{{eis_3}}": eisen[2],
+        "{{voorkeur_1}}": voorkeuren[0], "{{voorkeur_2}}": voorkeuren[1], "{{voorkeur_3}}": voorkeuren[2],
+        "{{usp_1}}": usps[0], "{{usp_2}}": usps[1], "{{usp_3}}": usps[2],
+        "{{no_go_sourcing}}": ", ".join(nogo),
+        "{{salaris}}": normalize_salary_display(get_nested_v12(data, "basisgegevens.salaris", "")),
+        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie", ""),
+        "{{uren}}": get_nested_v12(data, "basisgegevens.uren", ""),
+        "{{doelgroepgrootte}}": _strip_target_size(get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte", "")),
+        "{{pull_1}}": pulls[0], "{{pull_2}}": pulls[1], "{{pull_3}}": pulls[2],
+        "{{voorwaarde_1}}": voorwaarden[0], "{{voorwaarde_2}}": voorwaarden[1], "{{voorwaarde_3}}": voorwaarden[2],
+        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man", ""),
+        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw", ""),
+        "{{afspraak_1}}": afspraken[0], "{{afspraak_2}}": afspraken[1], "{{afspraak_3}}": afspraken[2],
     }
+
     for slide in prs.slides:
         for shape in list(slide.shapes):
-            render_shape_v22(slide, shape, data, replacements)
-        for shape in slide.shapes:
-            clear_unreplaced_placeholders(shape)
+            _render_template_shape_v23(slide, shape, data, replacements)
+
+    # Safety check: geen zichtbare placeholdertokens in het eindbestand.
+    leftovers = []
+    def collect(shapes):
+        for sh in shapes:
+            if sh.shape_type == MSO_SHAPE_TYPE.GROUP:
+                collect(sh.shapes)
+            elif hasattr(sh, "text") and "{{" in sh.text:
+                leftovers.append(sh.text)
+    for slide in prs.slides:
+        collect(slide.shapes)
+    if leftovers:
+        raise RuntimeError("Niet alle PowerPoint-placeholders konden worden ingevuld: " + " | ".join(leftovers[:5]))
+
     with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
         prs.save(tmp.name)
-        return Path(tmp.name).read_bytes()
-
+        result = Path(tmp.name).read_bytes()
+    return result
 
 st.title("📄 Startdocument Generator")
 st.caption("Upload de vacature en intake. Controleer de preview en download daarna een nette PowerPoint in de vaste Cooble-template.")
