@@ -37,11 +37,6 @@ DEFAULT_MODEL = "gpt-4.1"
 
 
 # v2.1: stabiele demografie + presentatie-engine dichter op Cooble-template; grotere leesbare fonts.
-def employment_conditions_are_invalid(items: List[str]) -> bool:
-    normalized = normalize_conditions(items)
-    return len(normalized) != 3 or len(set(normalized)) != 3
-
-
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/7: feiten uit vacature en intake halen")
@@ -291,10 +286,13 @@ def normalize_condition_label(text: str) -> str:
     for needles, label in category_rules:
         if any(n in low for n in needles):
             return label
-    # Alleen primaire/secundaire arbeidsvoorwaarden zijn toegestaan.
-    # Zachte factoren zoals werksfeer, cultuur, impact, autonomie of inhoud van het werk
-    # horen bij pullfactoren en worden hier bewust afgewezen.
-    return ""
+    # Geen cijfers/percentages/bedragen toelaten in resterende labels.
+    text = re.sub(r"€?\s*\d[\d\.,%/-]*", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,;-:")
+    # Houd labels kort; concrete zinnen zijn niet gewenst.
+    if len(text.split()) > 4:
+        text = " ".join(text.split()[:4])
+    return text[:1].upper() + text[1:] if text else text
 
 
 def normalize_conditions(items: List[str]) -> List[str]:
@@ -1809,13 +1807,118 @@ Geef uitsluitend JSON terug:
 """.strip()
 
 
-def build_employment_conditions_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
-    retry_text = "" if not strict_retry else """
-EXTRA CONTROLE BIJ DEZE HERHALING:
-- Een eerdere uitkomst bevatte geen drie geldige primaire/secundaire arbeidsvoorwaarden.
-- Kies uitsluitend drie verschillende labels uit de gesloten lijst hieronder.
-- Neem nooit werksfeer, cultuur, impact, autonomie of inhoud van het werk op.
-"""
+def public_occupation_query(facts: Dict[str, Any]) -> str:
+    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
+    title = str(facts.get("vacaturenaam", "")).strip()
+    t = title.lower()
+    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
+        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
+    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
+        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
+    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
+        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
+    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
+        return "business analisten en informatieanalisten in Nederland"
+    if title:
+        return title
+    return "ervaren professionals in Nederland"
+
+
+def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    doelgroep = public_occupation_query(facts)
+    return f"""
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar deze BEROEPSDOELGROEP:
+Doelgroep/functiefamilie: {doelgroep}
+Land: Nederland
+LinkedIn doelgroepgrootte: {linkedin_size}
+
+ZEER BELANGRIJK — BRONSCHEIDING:
+- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
+- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
+- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
+
+Onderzoek uitsluitend:
+1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
+2. gangbare vergelijkbare functietitels;
+3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
+4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
+
+Regels:
+- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
+- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
+- Gebruik echte bedrijfsnamen, nooit placeholders.
+- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
+- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
+
+Geef uitsluitend JSON:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "bronnen": []
+}}
+""".strip()
+
+
+def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
+    doelgroep = public_occupation_query(facts)
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
+Doelgroep/functiefamilie: {doelgroep}
+Land: Nederland
+
+Onderzoek uitsluitend:
+1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
+2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie/sector.
+
+Bronhiërarchie — gebruik bij iedere run in deze volgorde dezelfde bronsoorten:
+1. CBS / StatLine of andere officiële Nederlandse statistiek;
+2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
+3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
+Gebruik alleen een bredere sector als specifiekere beroepsdata niet beschikbaar is.
+
+Consistentieregels:
+- Baseer man-vrouw én leeftijd zoveel mogelijk op dezelfde beroepsafbakening en dezelfde bronfamilie.
+- Geef de meest recente beschikbare Nederlandse data prioriteit.
+- Rond percentages af op hele procenten.
+- Man + vrouw moet exact 100% zijn.
+- Leeftijdscategorieën moeten samen exact 100% zijn.
+- Gebruik ALTIJD deze leeftijdscategorieën: 15-24, 25-34, 35-49, 50+.
+- Maak geen vrije AI-schatting als er geen bruikbare bron is; gebruik dan de dichtstbijzijnde aantoonbare functiefamilie/sector en benoem dat in toelichting.
+- Gebruik geen informatie uit vacaturetekst of intake als demografische bron.
+
+Geef uitsluitend JSON:
+{{
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
+  "bronnen": [],
+  "afbakening": "",
+  "toelichting": ""
+}}
+""".strip()
+
+
+def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any], demographics: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(market or {})
+    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
+    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
+    result["geslacht"] = (demographics or {}).get("geslacht", {"man": "", "vrouw": ""})
+    result["leeftijdsverdeling"] = clean_list((demographics or {}).get("leeftijdsverdeling", []))[:4]
+    result["demografie_afbakening"] = (demographics or {}).get("afbakening", "")
+    result["research_bronnen"] = list(dict.fromkeys(
+        clean_list((market or {}).get("bronnen", [])) +
+        clean_list((conditions or {}).get("bronnen", [])) +
+        clean_list((pull or {}).get("bronnen", [])) +
+        clean_list((demographics or {}).get("bronnen", []))
+    ))
+    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden, pullfactoren en demografie zijn als aparte verplichte webonderzoeksvragen uitgevoerd."
+    return result
+
+
+def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
     return f"""
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse arbeidsmarkt voor deze doelgroep:
 Functie/doelgroep: {facts.get('vacaturenaam','')}
@@ -1828,12 +1931,11 @@ Regels:
 - Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals arbeidsmarktonderzoeken, werknemersenquêtes, brancheonderzoeken en relevante doelgroepstudies.
 - Gebruik de vacaturetekst, intake, werkgever en diens vacaturepagina NIET als bron.
 - Zoek dus niet naar wat DEZE werkgever aanbiedt, maar naar wat DEZE DOELGROEP belangrijk vindt.
-- Geef precies 3 primaire of secundaire arbeidsvoorwaarden. Kies uitsluitend uit: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling, Eindejaarsuitkering, Flexibele werktijden, Vitaliteitsregeling.
-- Werksfeer, cultuur, autonomie, inhoudelijke uitdaging, impact, werkzekerheid en ontwikkelperspectief als motivatie zijn GEEN arbeidsvoorwaarden; die horen eventueel bij pullfactoren.
+- Geef precies 3 generieke categorieën, bijvoorbeeld: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling of Flexibele werktijden.
 - Eén onderwerp per item.
 - Geen bedragen, percentages, aantallen dagen, uren of andere concrete werkgeversvoorwaarden.
 - Voeg bronnen/domeinen toe.
-{retry_text}
+
 Geef uitsluitend JSON:
 {{
   "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
@@ -2260,11 +2362,6 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     if status:
         status.write("Stap 3/8: belangrijkste arbeidsvoorwaarden online onderzoeken")
     conditions = call_openai_json(build_employment_conditions_research_prompt(facts), use_web=True)
-    if employment_conditions_are_invalid(conditions.get("belangrijkste_arbeidsvoorwaarden", [])):
-        conditions = call_openai_json(build_employment_conditions_research_prompt(facts, strict_retry=True), use_web=True)
-    if employment_conditions_are_invalid(conditions.get("belangrijkste_arbeidsvoorwaarden", [])):
-        raise RuntimeError("Online arbeidsvoorwaardenonderzoek leverde geen drie geldige primaire/secundaire arbeidsvoorwaarden op.")
-    conditions["belangrijkste_arbeidsvoorwaarden"] = normalize_conditions(conditions.get("belangrijkste_arbeidsvoorwaarden", []))
 
     if status:
         status.write("Stap 4/8: pullfactoren onafhankelijk online onderzoeken")
@@ -2307,7 +2404,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
 
     # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
     data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.5: facts -> external market -> strict primary/secondary conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.4: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
     return ensure_core_keys(data)
 
 
