@@ -37,6 +37,11 @@ DEFAULT_MODEL = "gpt-4.1"
 
 
 # v2.1: stabiele demografie + presentatie-engine dichter op Cooble-template; grotere leesbare fonts.
+def employment_conditions_are_invalid(items: List[str]) -> bool:
+    normalized = normalize_conditions(items)
+    return len(normalized) != 3 or len(set(normalized)) != 3
+
+
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/7: feiten uit vacature en intake halen")
@@ -286,13 +291,10 @@ def normalize_condition_label(text: str) -> str:
     for needles, label in category_rules:
         if any(n in low for n in needles):
             return label
-    # Geen cijfers/percentages/bedragen toelaten in resterende labels.
-    text = re.sub(r"€?\s*\d[\d\.,%/-]*", "", text)
-    text = re.sub(r"\s+", " ", text).strip(" ,;-:")
-    # Houd labels kort; concrete zinnen zijn niet gewenst.
-    if len(text.split()) > 4:
-        text = " ".join(text.split()[:4])
-    return text[:1].upper() + text[1:] if text else text
+    # Alleen primaire/secundaire arbeidsvoorwaarden zijn toegestaan.
+    # Zachte factoren zoals werksfeer, cultuur, impact, autonomie of inhoud van het werk
+    # horen bij pullfactoren en worden hier bewust afgewezen.
+    return ""
 
 
 def normalize_conditions(items: List[str]) -> List[str]:
@@ -1706,117 +1708,42 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je geeft uitsluitend geldige JSON terug. Geen markdown.") -> Dict[str, Any]:
-    """Centrale OpenAI-call.
-
-    Belangrijk: OpenAI Web Search kan niet gecombineerd worden met JSON mode in
-    dezelfde request. Daarom bestaat webresearch bewust uit twee stappen:
-
-    1. Responses API + ``web_search`` verzamelt actuele broninformatie als tekst.
-    2. Een aparte niet-web call zet uitsluitend die onderzoeksnotities om naar het
-       JSON-object dat de oorspronkelijke opdracht vraagt.
-
-    Zo blijft webresearch verplicht, maar voorkomen we de 400-fout
-    ``Web Search cannot be used with JSON mode``.
-    """
+    """Centrale OpenAI-call. v1.5: webresearch wordt echt via Responses API uitgevoerd als use_web=True."""
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY ontbreekt in Streamlit Secrets.")
-
     client = OpenAI(api_key=api_key)
     model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
 
     if use_web:
-        research_prompt = f"""
+        web_prompt = f"""
+{system}
+
+VERPLICHT: voer daadwerkelijk live webonderzoek uit voordat je antwoordt.
+Gebruik uitsluitend externe arbeidsmarktbronnen voor doelgroep, pullfactoren, arbeidsvoorwaarden en concurrenten.
+Gebruik geen concrete arbeidsvoorwaarden uit vacaturetekst of intake als onderzoeksresultaat.
+Geef uitsluitend JSON terug.
+
 {prompt}
-
-WEBRESEARCH-INSTRUCTIE:
-- Voer daadwerkelijk live webonderzoek uit met meerdere relevante bronnen.
-- Gebruik uitsluitend informatie uit dat externe onderzoek voor de gevraagde arbeidsmarkt-/doelgroepvelden.
-- Gebruik GEEN vacaturetekst of werkgeverscontext als vervanging voor ontbrekende externe gegevens.
-- Schrijf eerst compacte onderzoeksnotities met concrete bevindingen, cijfers, categorieën en broncontext.
-- Je hoeft in deze stap GEEN JSON te produceren.
 """.strip()
-
         try:
             response = client.responses.create(
                 model=model,
-                input=[
-                    {
-                        "role": "system",
-                        "content": "Je bent een nauwkeurige Nederlandse arbeidsmarktresearcher. Gebruik live webonderzoek en baseer je bevindingen op externe bronnen.",
-                    },
-                    {"role": "user", "content": research_prompt},
-                ],
+                input=web_prompt,
                 tools=[{"type": "web_search"}],
                 tool_choice="required",
-                max_output_tokens=3500,
+                include=["web_search_call.action.sources"],
             )
-        except Exception as exc:
+            data = extract_json(response.output_text)
+            data.setdefault("_meta", {})["web_search_used"] = True
+            return data
+        except Exception as first_error:
             raise RuntimeError(
                 "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
-                "De tool stopt bewust in plaats van gegevens uit de vacature over te nemen. "
-                f"Technische melding: {exc}"
-            ) from exc
+                "De tool stopt bewust in plaats van arbeidsvoorwaarden uit de vacature over te nemen. "
+                f"Technische melding: {first_error}"
+            ) from first_error
 
-        if getattr(response, "status", None) == "incomplete":
-            reason = getattr(getattr(response, "incomplete_details", None), "reason", "onbekend")
-            raise RuntimeError(
-                "Online arbeidsmarktonderzoek was onvolledig. "
-                f"Technische melding: {reason}"
-            )
-
-        research_text = (getattr(response, "output_text", "") or "").strip()
-        if not research_text:
-            raise RuntimeError(
-                "Online arbeidsmarktonderzoek leverde geen bruikbare onderzoeksnotities op."
-            )
-
-        # Tweede stap: géén webtool meer. Alleen de gevonden research structureren.
-        structure_prompt = f"""
-OORSPRONKELIJKE OPDRACHT:
-{prompt}
-
-LIVE WEBRESEARCH (DIT IS DE ENIGE EXTERNE FEITENBRON VOOR DEZE STAP):
-{research_text}
-
-Zet de onderzoeksresultaten om naar precies het JSON-object dat de oorspronkelijke opdracht vraagt.
-Regels:
-- Gebruik alleen feiten en conclusies die door de LIVE WEBRESEARCH hierboven worden gedragen.
-- Vul ontbrekende externe informatie niet aan vanuit de vacature, werkgever of vrije aannames.
-- Als een gevraagd veld onvoldoende wordt ondersteund, gebruik een lege lijst, lege string of null passend bij het gevraagde JSON-formaat.
-- Geef uitsluitend één geldig JSON-object terug; geen markdown en geen toelichting buiten JSON.
-""".strip()
-
-        last_error = None
-        for _ in range(2):
-            try:
-                chat = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Je structureert aangeleverde webresearch. Je geeft uitsluitend geldige JSON terug en verzint geen ontbrekende feiten.",
-                        },
-                        {"role": "user", "content": structure_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                )
-                content = chat.choices[0].message.content or "{}"
-                data = json.loads(content)
-                if not isinstance(data, dict):
-                    raise ValueError("Response is geen JSON-object.")
-                data.setdefault("_meta", {})["web_search_used"] = True
-                return data
-            except Exception as exc:
-                last_error = exc
-                structure_prompt += "\n\nHERSTEL: geef uitsluitend syntactisch geldige JSON, zonder tekst erbuiten."
-
-        raise RuntimeError(
-            "Het online onderzoek is uitgevoerd, maar kon niet betrouwbaar naar JSON worden omgezet. "
-            f"Technische melding: {last_error}"
-        ) from last_error
-
-    # Niet-webcalls: JSON mode is hier wel passend.
     chat = client.chat.completions.create(
         model=model,
         messages=[
@@ -1825,8 +1752,8 @@ Regels:
         ],
         response_format={"type": "json_object"},
     )
-    content = chat.choices[0].message.content or "{}"
-    return json.loads(content)
+    return extract_json(chat.choices[0].message.content or "{}")
+
 
 def build_research_prompt(facts: Dict[str, Any], linkedin_size: str, vacature: str, intake: str) -> str:
     klant = facts.get("klantnaam", "")
@@ -1882,7 +1809,13 @@ Geef uitsluitend JSON terug:
 """.strip()
 
 
-def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
+def build_employment_conditions_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
+    retry_text = "" if not strict_retry else """
+EXTRA CONTROLE BIJ DEZE HERHALING:
+- Een eerdere uitkomst bevatte geen drie geldige primaire/secundaire arbeidsvoorwaarden.
+- Kies uitsluitend drie verschillende labels uit de gesloten lijst hieronder.
+- Neem nooit werksfeer, cultuur, impact, autonomie of inhoud van het werk op.
+"""
     return f"""
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse arbeidsmarkt voor deze doelgroep:
 Functie/doelgroep: {facts.get('vacaturenaam','')}
@@ -1895,11 +1828,12 @@ Regels:
 - Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals arbeidsmarktonderzoeken, werknemersenquêtes, brancheonderzoeken en relevante doelgroepstudies.
 - Gebruik de vacaturetekst, intake, werkgever en diens vacaturepagina NIET als bron.
 - Zoek dus niet naar wat DEZE werkgever aanbiedt, maar naar wat DEZE DOELGROEP belangrijk vindt.
-- Geef precies 3 generieke categorieën, bijvoorbeeld: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling of Flexibele werktijden.
+- Geef precies 3 primaire of secundaire arbeidsvoorwaarden. Kies uitsluitend uit: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling, Eindejaarsuitkering, Flexibele werktijden, Vitaliteitsregeling.
+- Werksfeer, cultuur, autonomie, inhoudelijke uitdaging, impact, werkzekerheid en ontwikkelperspectief als motivatie zijn GEEN arbeidsvoorwaarden; die horen eventueel bij pullfactoren.
 - Eén onderwerp per item.
 - Geen bedragen, percentages, aantallen dagen, uren of andere concrete werkgeversvoorwaarden.
 - Voeg bronnen/domeinen toe.
-
+{retry_text}
 Geef uitsluitend JSON:
 {{
   "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
@@ -2192,23 +2126,6 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def public_occupation_query(facts: Dict[str, Any]) -> str:
-    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
-    title = str(facts.get("vacaturenaam", "")).strip()
-    t = title.lower()
-    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
-        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
-    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
-        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
-    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
-        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
-    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
-        return "business analisten en informatieanalisten in Nederland"
-    if title:
-        return title
-    return "ervaren professionals in Nederland"
-
-
 def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
     doelgroep = public_occupation_query(facts)
     retry = "" if not strict_retry else """
@@ -2316,99 +2233,6 @@ def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
     return len(set(cleaned)) != 3
 
 
-def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
-    functie = str(facts.get("vacaturenaam", "")).strip()
-    return f"""
-Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar de BEROEPSDOELGROEP achter deze functietitel:
-Functietitel/functiefamilie: {functie}
-Land: Nederland
-LinkedIn doelgroepgrootte: {linkedin_size}
-
-ZEER BELANGRIJK — BRONSCHEIDING:
-- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
-- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
-- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
-
-Onderzoek uitsluitend:
-1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
-2. gangbare vergelijkbare functietitels;
-3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
-4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
-
-Regels:
-- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
-- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
-- Gebruik echte bedrijfsnamen, nooit placeholders.
-- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
-- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
-
-Geef uitsluitend JSON:
-{{
-  "doelgroep_titel": "",
-  "doelgroep_omschrijving": "",
-  "verwachte_doelgroepgrootte": "",
-  "belangrijkste_functietitels": [],
-  "concurrenten_bedrijven": [],
-  "zoekrichting": [],
-  "bronnen": []
-}}
-""".strip()
-
-
-def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
-    functie = str(facts.get("vacaturenaam", "")).strip()
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
-Functie/functiefamilie: {functie}
-Land: Nederland
-
-Onderzoek uitsluitend:
-1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
-2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie/sector.
-
-Bronhiërarchie — gebruik bij iedere run in deze volgorde dezelfde bronsoorten:
-1. CBS / StatLine of andere officiële Nederlandse statistiek;
-2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
-3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
-Gebruik alleen een bredere sector als specifiekere beroepsdata niet beschikbaar is.
-
-Consistentieregels:
-- Baseer man-vrouw én leeftijd zoveel mogelijk op dezelfde beroepsafbakening en dezelfde bronfamilie.
-- Geef de meest recente beschikbare Nederlandse data prioriteit.
-- Rond percentages af op hele procenten.
-- Man + vrouw moet exact 100% zijn.
-- Leeftijdscategorieën moeten samen exact 100% zijn.
-- Gebruik ALTIJD deze leeftijdscategorieën: 15-24, 25-34, 35-49, 50+.
-- Gebruik geen informatie uit vacaturetekst of intake als demografische bron.
-
-Geef uitsluitend JSON:
-{{
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
-  "bronnen": [],
-  "afbakening": "",
-  "toelichting": ""
-}}
-""".strip()
-
-
-def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any], demographics: Dict[str, Any]) -> Dict[str, Any]:
-    result = dict(market or {})
-    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
-    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
-    result["geslacht"] = (demographics or {}).get("geslacht", {"man": "", "vrouw": ""})
-    result["leeftijdsverdeling"] = clean_list((demographics or {}).get("leeftijdsverdeling", []))[:4]
-    result["demografie_afbakening"] = (demographics or {}).get("afbakening", "")
-    result["research_bronnen"] = list(dict.fromkeys(
-        clean_list((market or {}).get("bronnen", [])) +
-        clean_list((conditions or {}).get("bronnen", [])) +
-        clean_list((pull or {}).get("bronnen", [])) +
-        clean_list((demographics or {}).get("bronnen", []))
-    ))
-    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden, pullfactoren en demografie zijn als aparte verplichte webonderzoeksvragen uitgevoerd."
-    return result
-
-
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/8: feiten uit vacature en intake halen")
@@ -2436,6 +2260,11 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     if status:
         status.write("Stap 3/8: belangrijkste arbeidsvoorwaarden online onderzoeken")
     conditions = call_openai_json(build_employment_conditions_research_prompt(facts), use_web=True)
+    if employment_conditions_are_invalid(conditions.get("belangrijkste_arbeidsvoorwaarden", [])):
+        conditions = call_openai_json(build_employment_conditions_research_prompt(facts, strict_retry=True), use_web=True)
+    if employment_conditions_are_invalid(conditions.get("belangrijkste_arbeidsvoorwaarden", [])):
+        raise RuntimeError("Online arbeidsvoorwaardenonderzoek leverde geen drie geldige primaire/secundaire arbeidsvoorwaarden op.")
+    conditions["belangrijkste_arbeidsvoorwaarden"] = normalize_conditions(conditions.get("belangrijkste_arbeidsvoorwaarden", []))
 
     if status:
         status.write("Stap 4/8: pullfactoren onafhankelijk online onderzoeken")
@@ -2478,7 +2307,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
 
     # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
     data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.4: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.5: facts -> external market -> strict primary/secondary conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
     return ensure_core_keys(data)
 
 

@@ -1,13 +1,17 @@
-# Startdocument Generator v2.4.8
+# Startdocument Generator v2.4.5
 
-Hotfix op v2.4.7 voor de fout `Web Search cannot be used with JSON mode`.
+Wijzigingen in deze versie:
 
-Wijzigingen:
-- Webresearch en JSON-output zijn nu technisch gescheiden in twee stappen.
-- Stap 1 gebruikt OpenAI Responses API + `web_search` verplicht voor live internetonderzoek.
-- Stap 2 structureert uitsluitend de gevonden onderzoeksnotities naar geldig JSON zonder webtool.
-- Er is geen fallback naar vacaturetekst voor doelgroep-, pullfactor-, arbeidsvoorwaarden- of demografieonderzoek.
-- Bij mislukte webresearch stopt de tool bewust met een duidelijke foutmelding.
-- Extra syntax- en functiedefinitiecontrole uitgevoerd.
+- Eisen en voorkeuren worden compacter gemaakt voor de kandidaat-slide.
+- Afspraken zijn grotere tekstvelden in de preview, zodat de volledige tekst zichtbaar en bewerkbaar is.
+- Man/vrouw en leeftijd zijn gestabiliseerd per functiefamilie, zodat dezelfde doelgroep niet per run sterk wisselt.
+- Webresearch blijft onderdeel van de pipeline, maar de presentatie gebruikt een genormaliseerde benchmark voor demografie.
+- Cooble-template-first export blijft behouden.
 
-Upload de volledige inhoud naar GitHub en laat Streamlit opnieuw deployen.
+Upload alle bestanden en mappen naar GitHub, inclusief `templates/`.
+
+
+## v2.4.5
+- Arbeidsvoorwaarden zijn nu strikt beperkt tot primaire/secundaire voorwaarden.
+- Werksfeer, cultuur, impact en autonomie worden geweerd uit arbeidsvoorwaarden.
+- Bij ongeldige research volgt automatisch een tweede websearch.
