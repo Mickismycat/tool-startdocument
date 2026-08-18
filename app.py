@@ -2117,6 +2117,23 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def public_occupation_query(facts: Dict[str, Any]) -> str:
+    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
+    title = str(facts.get("vacaturenaam", "")).strip()
+    t = title.lower()
+    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
+        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
+    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
+        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
+    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
+        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
+    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
+        return "business analisten en informatieanalisten in Nederland"
+    if title:
+        return title
+    return "ervaren professionals in Nederland"
+
+
 def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
     doelgroep = public_occupation_query(facts)
     retry = "" if not strict_retry else """
