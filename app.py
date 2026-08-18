@@ -1499,6 +1499,333 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+
+
+# -----------------------------------------------------------------------------
+# v1.5 overrides: template-first PowerPoint renderer + stricter web research
+# -----------------------------------------------------------------------------
+
+def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je geeft uitsluitend geldige JSON terug. Geen markdown.") -> Dict[str, Any]:
+    """Centrale OpenAI-call. v1.5: webresearch wordt echt via Responses API uitgevoerd als use_web=True."""
+    api_key = st.secrets.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY ontbreekt in Streamlit Secrets.")
+    client = OpenAI(api_key=api_key)
+    model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
+
+    if use_web:
+        web_prompt = f"""
+{system}
+
+BELANGRIJK: gebruik web_search voor actueel extern arbeidsmarktonderzoek. Baseer pullfactoren,
+arbeidsvoorwaarden, doelgroep en concurrenten NIET op de vacaturetekst. Geef uitsluitend JSON terug.
+
+{prompt}
+""".strip()
+        try:
+            response = client.responses.create(
+                model=model,
+                input=web_prompt,
+                tools=[{"type": "web_search_preview"}],
+            )
+            data = extract_json(response.output_text)
+            data.setdefault("_meta", {})["web_search_used"] = True
+            return data
+        except Exception as first_error:
+            fallback_prompt = prompt + f"""
+
+LET OP: de web_search-tool kon niet worden gebruikt ({first_error}). Geef GEEN vacaturetekst-samenvatting als research.
+Gebruik alleen algemene arbeidsmarktkennis en markeer _meta.web_search_used = false.
+"""
+            data = call_openai_json(fallback_prompt, use_web=False, system=system)
+            data.setdefault("_meta", {})["web_search_used"] = False
+            data.setdefault("_meta", {})["web_search_warning"] = str(first_error)
+            return data
+
+    chat = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return extract_json(chat.choices[0].message.content or "{}")
+
+
+def build_research_prompt(facts: Dict[str, Any], linkedin_size: str, vacature: str, intake: str) -> str:
+    klant = facts.get("klantnaam", "")
+    functie = facts.get("vacaturenaam", "")
+    locatie = facts.get("locatie", "Nederland")
+    nuances = facts.get("nuances", [])
+    manager_nadruk = facts.get("manager_nadruk", [])
+    return f"""
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe extern internetonderzoek naar de doelgroep.
+
+Zoek online naar:
+1. vergelijkbare functietitels en senioriteitsniveau;
+2. bedrijven waar deze doelgroep werkt;
+3. arbeidsvoorwaarden die deze doelgroep belangrijk vindt;
+4. externe pullfactoren waardoor deze doelgroep van baan wisselt;
+5. globale leeftijds- en genderverdeling voor deze beroepsgroep/sector.
+
+Harde regels:
+- Pullfactoren zijn extern en arbeidsmarktgericht. Gebruik de vacaturetekst NIET als bron.
+- Arbeidsvoorwaarden zijn extern en arbeidsmarktgericht. Gebruik GEEN concrete voorwaarden uit vacature of intake.
+- Gebruik generieke labels: Hybride werken, Vakantiedagen, Pensioenregeling, Ontwikkelmogelijkheden, Mobiliteit.
+- Concurrentenanalyse is altijd relevant en op bedrijfsniveau.
+- Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1 of Organisatie X.
+- Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
+- Eén bullet = één onderwerp. Maximaal 3 pullfactoren en 3 arbeidsvoorwaarden.
+- Als doelgroepgrootte uit LinkedIn is ingevuld, neem die letterlijk over.
+- Voeg research_bronnen toe met korte bronlabels of domeinen die je hebt gebruikt.
+
+Context om de juiste doelgroep te bepalen:
+Klant: {klant}
+Functie: {functie}
+Locatie/regio: {locatie}
+Doelgroepgrootte LinkedIn: {linkedin_size}
+Nuances uit intake: {json.dumps(nuances, ensure_ascii=False)}
+Manager nadruk: {json.dumps(manager_nadruk, ensure_ascii=False)}
+No-go/check-eerst bedrijven: {json.dumps(facts.get('no_go_bedrijven', []), ensure_ascii=False)}
+
+Geef uitsluitend JSON terug:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "pullfactoren": ["", "", ""],
+  "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["25-34: %", "35-44: %", "45-54: %", "55+: %"],
+  "research_bronnen": [],
+  "research_toelichting": ""
+}}
+""".strip()
+
+
+def presentation_summary(text: str) -> str:
+    """Compacte intake-samenvatting voor de Cooble-template."""
+    text = strip_bullet_markers(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    if len(words) > 92:
+        text = " ".join(words[:92]).rstrip(" ,;") + "."
+    return text
+
+
+def _copy_font_style(src_run, dst_run, fallback_size: int = 14) -> None:
+    """Gebruik zoveel mogelijk de stijl uit de template zelf."""
+    try:
+        dst_run.font.name = src_run.font.name or FONT_NAME
+    except Exception:
+        dst_run.font.name = FONT_NAME
+    try:
+        dst_run.font.size = src_run.font.size or Pt(fallback_size)
+    except Exception:
+        dst_run.font.size = Pt(fallback_size)
+    try:
+        dst_run.font.bold = src_run.font.bold
+    except Exception:
+        pass
+    try:
+        if src_run.font.color and src_run.font.color.rgb:
+            dst_run.font.color.rgb = src_run.font.color.rgb
+    except Exception:
+        pass
+
+
+def _template_style_run(shape):
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return None
+    for p in shape.text_frame.paragraphs:
+        for r in p.runs:
+            if r.text.strip():
+                return r
+    return None
+
+
+def set_plain_text_template(shape, text: str, fallback_size: int = 14) -> None:
+    src_run = _template_style_run(shape)
+    tf = shape.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    run = p.add_run()
+    run.text = str(text or "").strip()
+    if src_run:
+        _copy_font_style(src_run, run, fallback_size)
+    else:
+        run.font.name = FONT_NAME
+        run.font.size = Pt(fallback_size)
+    p.space_before = Pt(0)
+    p.space_after = Pt(0)
+
+
+def set_bullet_list_template(shape, items: List[str], fallback_size: int = 12) -> None:
+    src_run = _template_style_run(shape)
+    tf = shape.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    clean = clean_list(items)[:5]
+    if not clean:
+        return
+    size = fallback_size
+    total_chars = sum(len(x) for x in clean)
+    if total_chars > 210 or len(clean) >= 4:
+        size = max(9, fallback_size - 2)
+    elif total_chars > 150:
+        size = max(10, fallback_size - 1)
+    for idx, item in enumerate(clean):
+        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        p.text = ""
+        p.space_before = Pt(0)
+        p.space_after = Pt(2)
+        p.level = 0
+        run = p.add_run()
+        run.text = "• " + str(item).strip()
+        if src_run:
+            _copy_font_style(src_run, run, size)
+            run.font.size = Pt(size)
+        else:
+            run.font.name = FONT_NAME
+            run.font.size = Pt(size)
+
+
+def replace_mixed_text_template(shape, replacements: Dict[str, str], fallback_size: int = 12) -> None:
+    original = full_text(shape)
+    text = original
+    for key, value in replacements.items():
+        text = text.replace(key, str(value or ""))
+    if "{{" not in original:
+        return
+    set_plain_text_template(shape, text.strip(), fallback_size=fallback_size)
+
+
+def create_age_chart_image(items: List[str]) -> BytesIO:
+    import matplotlib.pyplot as plt
+    labels, values = parse_age_items(items)
+    labels = [str(x).replace(" jaar", "").replace(" ", "") for x in labels]
+    fig, ax = plt.subplots(figsize=(5.2, 2.35), dpi=190)
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    ax.set_xlim(-24, 112)
+    ax.set_ylim(-0.5, len(labels) - 0.5)
+    ax.axis("off")
+    accent = "#5A4BD8"
+    track = "#EEF0F4"
+    label_color = "#111111"
+    for i, (label, value) in enumerate(zip(labels, values)):
+        y = len(labels) - 1 - i
+        ax.text(-23, y, label, va="center", ha="left", fontsize=10, color=label_color)
+        ax.plot([0, 100], [y, y], color=track, linewidth=13, solid_capstyle="round")
+        ax.plot([0, min(value, 100)], [y, y], color=accent, linewidth=13, solid_capstyle="round")
+        ax.text(109, y, f"{int(round(value))}%", va="center", ha="right", fontsize=10.5, fontweight="bold", color=label_color)
+    buf = BytesIO()
+    plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def render_shape_v15(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            render_shape_v15(slide, subshape, data, replacements)
+        return
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    original = full_text(shape)
+    if not original:
+        return
+    stripped = original.strip()
+    if "{{leeftijdsverdeling}}" in original:
+        left, top, width, height = shape.left, shape.top, shape.width, shape.height
+        shape.text_frame.clear()
+        img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
+        pic_w = int(width * 0.92)
+        pic_h = int(height * 0.92)
+        pic_left = left + int((width - pic_w) / 2)
+        pic_top = top + int((height - pic_h) / 2)
+        slide.shapes.add_picture(img, pic_left, pic_top, width=pic_w, height=pic_h)
+        return
+    if stripped == "{{klantnaam}}" and getattr(shape, "top", 0) > Emu(7600000):
+        set_plain_text_template(shape, get_nested_v12(data, "basisgegevens.vacaturenaam", ""), fallback_size=24)
+        return
+    if "DOELGROEP:" in original and "{{doelgroep_titel}}" in original:
+        value = get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")
+        set_plain_text_template(shape, value, fallback_size=26)
+        return
+    if stripped in BULLET_PLACEHOLDERS:
+        path, _style = BULLET_PLACEHOLDERS[stripped]
+        fallback = 11 if stripped in {"{{eisen}}", "{{voorkeuren}}"} else 12
+        set_bullet_list_template(shape, get_nested_v12(data, path, []), fallback_size=fallback)
+        return
+    if stripped in PLAIN_PLACEHOLDERS:
+        path, _style = PLAIN_PLACEHOLDERS[stripped]
+        fallback = 12 if stripped == "{{intake_samenvatting}}" else 13
+        set_plain_text_template(shape, get_nested_v12(data, path, ""), fallback_size=fallback)
+        return
+    if "{{vacaturenaam}}" in original:
+        text = original.replace("{{vacaturenaam}}", str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
+        set_plain_text_template(shape, text.strip(), fallback_size=18)
+        return
+    if "{{" in original:
+        replace_mixed_text_template(shape, replacements, fallback_size=11)
+        return
+
+
+def generate_pptx(data: Dict[str, Any]) -> bytes:
+    """v1.5: template-first renderer. Houdt Cooble-layout leidend en vult alleen placeholders."""
+    template_path = get_template_path()
+    prs = Presentation(str(template_path))
+    delete_slides_by_exact_title(prs, {"AANPAK"})
+    afspraken = data.get("afspraken") or []
+    concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
+    concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
+    replacements = {
+        "{{klantnaam}}": get_nested_v12(data, "basisgegevens.klantnaam"),
+        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{datum}}": get_nested_v12(data, "basisgegevens.datum") or date.today().strftime("%d-%m-%Y"),
+        "{{intake_samenvatting}}": presentation_summary(data.get("intake_samenvatting", "")),
+        "{{sourcingplan_strategie}}": get_nested_v12(data, "sourcingplan.strategie"),
+        "{{sourcingplan_doelgroep}}": get_nested_v12(data, "sourcingplan.doelgroep"),
+        "{{concurrentenanalyse}}": concurrenten_text,
+        "{{zoekrichting}}": bullets(get_nested_v12(data, "sourcingplan.zoekrichting", [])),
+        "{{aanpak_toelichting}}": get_nested_v12(data, "sourcingplan.toelichting"),
+        "{{doelgroep_titel}}": get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{taken_verantwoordelijkheden}}": bullets(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", [])),
+        "{{eisen}}": bullets(get_nested_v12(data, "kandidaatprofiel.eisen", [])),
+        "{{voorkeuren}}": bullets(get_nested_v12(data, "kandidaatprofiel.voorkeuren", [])),
+        "{{no_go_sourcing}}": bullets(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", [])),
+        "{{doelgroepgrootte}}": get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
+        "{{doelgroep_regio}}": get_nested_v12(data, "doelgroepanalyse.regio") or "Nederland",
+        "{{salaris}}": get_nested_v12(data, "basisgegevens.salaris"),
+        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie"),
+        "{{uren}}": get_nested_v12(data, "basisgegevens.uren"),
+        "{{usp_functie}}": bullets(get_nested_v12(data, "functieprofiel.usp_functie", [])),
+        "{{pullfactoren}}": bullets(get_nested_v12(data, "doelgroepanalyse.pullfactoren", [])),
+        "{{belangrijkste_arbeidsvoorwaarden}}": bullets(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", [])),
+        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man"),
+        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw"),
+        "{{leeftijdsverdeling}}": bullets(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", [])),
+        "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
+        "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
+        "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
+    }
+    for slide in prs.slides:
+        for shape in list(slide.shapes):
+            render_shape_v15(slide, shape, data, replacements)
+        for shape in slide.shapes:
+            clear_unreplaced_placeholders(shape)
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        prs.save(tmp.name)
+        return Path(tmp.name).read_bytes()
+
+
 st.title("📄 Startdocument Generator")
 st.caption("Upload de vacature en intake. Controleer de preview en download daarna een nette PowerPoint in de vaste Cooble-template.")
 
