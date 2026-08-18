@@ -1,12 +1,12 @@
-# Startdocument Generator v1.5
+# Startdocument Generator v1.6
 
-Wijzigingen:
-- PowerPoint-renderer is nu template-first: de Cooble-template blijft leidend en alleen placeholders worden gevuld.
-- Leeftijdsverdeling wordt gecentreerd in het bestaande templatevak.
-- Intake-samenvatting wordt compacter voor betere layout.
-- Onderin slide 1 staat de vacaturenaam.
-- AANPAK-slide blijft verwijderd.
-- Doelgroepenonderzoek gebruikt expliciet OpenAI web_search via de Responses API.
-- Requirements geüpdatet naar openai>=1.86.0 zodat web_search_preview beschikbaar is.
+Wijzigingen in v1.6:
 
-Upload alle bestanden naar GitHub, inclusief de map `templates`.
+- Doelgroep/concurrenten, arbeidsvoorwaarden en pullfactoren worden als **drie aparte online onderzoeken** uitgevoerd.
+- Belangrijkste arbeidsvoorwaarden beantwoorden nu expliciet: *wat vindt deze doelgroep belangrijk wanneer zij in dienst zijn?*
+- Pullfactoren beantwoorden nu expliciet: *wat brengt deze doelgroep in beweging en wat willen zij terugzien in een vacature?*
+- Vacaturetekst en intake worden niet gebruikt als bron voor arbeidsvoorwaarden of pullfactoren.
+- Salaris wordt altijd alleen als **getal of range** weergegeven, zonder €, `bruto`, `per maand`, `schaal` of andere toelichting.
+- De bestaande Cooble-template en PowerPoint-engine blijven behouden.
+
+Upload alle bestanden en mappen naar dezelfde GitHub-repository. Streamlit redeployt vervolgens automatisch.

@@ -35,6 +35,63 @@ def get_template_path() -> Path:
     )
 DEFAULT_MODEL = "gpt-4.1"
 
+
+# v1.6: drie afzonderlijke webonderzoeken voor doelgroep, arbeidsvoorwaarden en pullfactoren.
+def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
+    if status:
+        status.write("Stap 1/7: feiten uit vacature en intake halen")
+    facts = call_openai_json(build_fact_extraction_prompt(vacature, intake, extra), use_web=False)
+
+    fallback = extract_basis_fallback(vacature, intake)
+    for fk in ["klantnaam", "vacaturenaam", "salaris"]:
+        if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
+            facts[fk] = fallback[fk]
+    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+
+    extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
+    if extracted_no_go:
+        merged = []
+        for item in clean_list(facts.get("no_go_bedrijven", [])) + extracted_no_go:
+            c = clean_company_name(item)
+            if c and c not in merged:
+                merged.append(c)
+        facts["no_go_bedrijven"] = merged
+
+    if status:
+        status.write("Stap 2/7: doelgroep en concurrenten online onderzoeken")
+    market = call_openai_json(build_target_market_research_prompt(facts, linkedin_size), use_web=True)
+
+    if status:
+        status.write("Stap 3/7: belangrijkste arbeidsvoorwaarden online onderzoeken")
+    conditions = call_openai_json(build_employment_conditions_research_prompt(facts), use_web=True)
+
+    if status:
+        status.write("Stap 4/7: pullfactoren online onderzoeken")
+    pull = call_openai_json(build_pullfactors_research_prompt(facts), use_web=True)
+    research = merge_research_parts(market, conditions, pull)
+
+    if status:
+        status.write("Stap 5/7: startdocument-content schrijven")
+    data = call_openai_json(build_writer_prompt(facts, research, vacature, intake, linkedin_size, extra), use_web=False)
+
+    if status:
+        status.write("Stap 6/7: presentatiekwaliteit aanscherpen")
+    try:
+        data = call_openai_json(build_presentation_prompt(data, facts, research), use_web=False)
+    except Exception as presentation_error:
+        data.setdefault("kwaliteitscontrole", {}).setdefault("waarschuwingen", []).append(str(presentation_error))
+
+    if status:
+        status.write("Stap 7/7: business rules toepassen")
+    data = apply_business_rules(data, intake + "\n" + extra, linkedin_size, vacature, extra)
+    # Researchvelden zijn leidend voor externe marktdata.
+    data.setdefault("doelgroepanalyse", {})["pullfactoren"] = presentation_bullets(research.get("pullfactoren", []), 3)
+    data.setdefault("voorwaarden", {})["belangrijkste_arbeidsvoorwaarden"] = presentation_bullets(normalize_conditions(research.get("belangrijkste_arbeidsvoorwaarden", [])), 3)
+    data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v1.6: facts -> market web -> conditions web -> pull web -> writer -> presentation"
+    return data
+
+
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 
 
@@ -218,6 +275,26 @@ def normalize_conditions(items: List[str]) -> List[str]:
             out.append(item)
     return out[:3]
 
+def normalize_salary_display(value: str) -> str:
+    """Toon salaris altijd als alleen een getal, schaalnummer of range; nooit tekst/€ / bruto / per maand."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Schaalnotatie: "Schaal 8/9/10" -> "8/9/10"
+    m = re.search(r"(?i)\bschaal\s*([0-9]+(?:\s*/\s*[0-9]+)*)", text)
+    if m:
+        return re.sub(r"\s+", "", m.group(1))
+    # Range met bedragen: € 5.200 - € 7.000 bruto p/m -> 5.200 - 7.000
+    nums = re.findall(r"(?<![A-Za-z])(?:\d{1,3}(?:[. ]\d{3})+|\d{4,6})(?:,\d{1,2})?", text)
+    if len(nums) >= 2:
+        return f"{nums[0].replace(' ', '.')} - {nums[1].replace(' ', '.')}"
+    if len(nums) == 1:
+        return nums[0].replace(' ', '.')
+    # Laat alleen cijfer/range-achtige tekens over als laatste veilige fallback.
+    cleaned = re.sub(r"[^0-9.,/\-– ]", "", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–.,")
+    return cleaned
+
 
 def normalize_age_distribution(items: List[str]) -> List[str]:
     """Zorgt dat leeftijdscategorieën altijd een percentage bevatten."""
@@ -368,6 +445,9 @@ def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: 
     for field in ["klantnaam", "vacaturenaam", "salaris"]:
         if is_empty_or_placeholder(b.get(field, "")) and fallback.get(field):
             b[field] = fallback[field]
+
+    # Salaris staat in de PowerPoint altijd als alleen getal/range, zonder valuta- of toelichtingstekst.
+    b["salaris"] = normalize_salary_display(b.get("salaris", ""))
 
     if linkedin_size.strip():
         data.setdefault("doelgroepanalyse", {})["verwachte_doelgroepgrootte"] = linkedin_size.strip()
@@ -1190,7 +1270,9 @@ Strenge schrijfrichtlijnen:
 - Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
 - Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
-- Arbeidsvoorwaarden: extern en arbeidsmarktgericht vanuit internetonderzoek/research. Niet uit vacaturetekst of intake overnemen. Generieke labels, geen concrete waarden uit vacaturetekst.
+- Arbeidsvoorwaarden: gebruik uitsluitend het aparte online onderzoek naar wat deze doelgroep belangrijk vindt WANNEER ZIJ IN DIENST ZIJN. Niet uit vacaturetekst of intake overnemen. Kies 3 arbeidsvoorwaardencategorieën, bijvoorbeeld Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit of Ontwikkelmogelijkheden.
+- Pullfactoren: gebruik uitsluitend het aparte online onderzoek naar wat deze doelgroep IN BEWEGING BRENGT en wat zij graag terugzien in een vacature. Pullfactoren zijn géén arbeidsvoorwaardenlijst en mogen niet uit vacaturetekst of intake worden afgeleid.
+- Salaris: toon uitsluitend het getal of de range, zonder €, bruto, per maand, schaal of andere woorden.
 - Concurrenten: echte bedrijfsnamen op bedrijfsniveau.
 - No-go sourcing: uitsluitend bedrijfsnamen uit feitenextractie. Niets toevoegen, niets weglaten.
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
@@ -1606,6 +1688,98 @@ Geef uitsluitend JSON terug:
 }}
 """.strip()
 
+
+def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse doelgroep voor:
+Functie: {facts.get('vacaturenaam','')}
+Locatie/regio: {facts.get('locatie','Nederland')}
+Nuances/senioriteit: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
+
+Onderzoek uitsluitend deze vraag:
+WELKE ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP BELANGRIJK WANNEER ZIJ IN DIENST ZIJN?
+
+Regels:
+- Gebruik web_search en externe arbeidsmarktbronnen.
+- Gebruik de vacature en intake NIET als bron voor het antwoord.
+- Denk aan categorieën zoals salaris, pensioen, verlof, flexibiliteit/hybride, mobiliteit, opleidingsbudget, bonus of werktijden, maar kies alleen wat onderzoek voor deze doelgroep ondersteunt.
+- Geef precies 3 korte categorieën, één onderwerp per item.
+- Geen concrete werkgeversvoorwaarden of aantallen dagen/bedragen.
+- Voeg bronnen/domeinen toe.
+
+Geef uitsluitend JSON:
+{{
+  "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
+  "bronnen": [],
+  "toelichting": ""
+}}
+""".strip()
+
+
+def build_pullfactors_research_prompt(facts: Dict[str, Any]) -> str:
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse doelgroep voor:
+Functie: {facts.get('vacaturenaam','')}
+Locatie/regio: {facts.get('locatie','Nederland')}
+Nuances/senioriteit: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
+
+Onderzoek uitsluitend deze vraag:
+WAT BRENGT DEZE DOELGROEP IN BEWEGING OM NAAR EEN ANDERE BAAN TE KIJKEN, EN WAT WILLEN ZIJ GRAAG TERUGZIEN IN EEN VACATURE?
+
+Regels:
+- Gebruik web_search en externe arbeidsmarktbronnen.
+- Gebruik de vacature en intake NIET als bron voor het antwoord.
+- Pullfactoren gaan over overstapmotieven/vacature-aantrekkelijkheid, niet over een opsomming van secundaire arbeidsvoorwaarden.
+- Geef precies 3 korte, zelfverzekerde labels; één onderwerp per item.
+- Voeg bronnen/domeinen toe.
+
+Geef uitsluitend JSON:
+{{
+  "pullfactoren": ["", "", ""],
+  "bronnen": [],
+  "toelichting": ""
+}}
+""".strip()
+
+
+def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    return f"""
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar deze doelgroep:
+Functie: {facts.get('vacaturenaam','')}
+Locatie/regio: {facts.get('locatie','Nederland')}
+Nuances: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
+Manager nadruk: {json.dumps(facts.get('manager_nadruk', []), ensure_ascii=False)}
+LinkedIn doelgroepgrootte: {linkedin_size}
+
+Onderzoek: specifieke doelgroepomschrijving, vergelijkbare functietitels, bedrijven waar deze doelgroep werkt, concurrenten op bedrijfsniveau en globale leeftijds-/genderverdeling.
+Gebruik echte bedrijfsnamen, nooit placeholders. Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
+
+Geef uitsluitend JSON:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["25-34: %", "35-44: %", "45-54: %", "55+: %"],
+  "bronnen": []
+}}
+""".strip()
+
+
+def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(market or {})
+    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
+    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
+    result["research_bronnen"] = list(dict.fromkeys(
+        clean_list((market or {}).get("bronnen", [])) +
+        clean_list((conditions or {}).get("bronnen", [])) +
+        clean_list((pull or {}).get("bronnen", []))
+    ))
+    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden en pullfactoren zijn als aparte webonderzoeksvragen uitgevoerd."
+    return result
 
 def presentation_summary(text: str) -> str:
     """Compacte intake-samenvatting voor de Cooble-template."""
