@@ -1706,42 +1706,70 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je geeft uitsluitend geldige JSON terug. Geen markdown.") -> Dict[str, Any]:
-    """Centrale OpenAI-call. v1.5: webresearch wordt echt via Responses API uitgevoerd als use_web=True."""
+    """Robuuste centrale OpenAI-call.
+
+    Voor webresearch gebruiken we Responses API + het actuele `web_search`-tooltype.
+    JSON mode wordt op API-niveau afgedwongen via `text.format`, zodat de response
+    syntactisch geldige JSON is en niet meer via vrije tekst hoeft te worden gerepareerd.
+    """
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY ontbreekt in Streamlit Secrets.")
+
     client = OpenAI(api_key=api_key)
     model = st.secrets.get("OPENAI_MODEL", DEFAULT_MODEL)
 
     if use_web:
         web_prompt = f"""
-{system}
-
-VERPLICHT: voer daadwerkelijk live webonderzoek uit voordat je antwoordt.
-Gebruik uitsluitend externe arbeidsmarktbronnen voor doelgroep, pullfactoren, arbeidsvoorwaarden en concurrenten.
-Gebruik geen concrete arbeidsvoorwaarden uit vacaturetekst of intake als onderzoeksresultaat.
-Geef uitsluitend JSON terug.
-
 {prompt}
-""".strip()
-        try:
-            response = client.responses.create(
-                model=model,
-                input=web_prompt,
-                tools=[{"type": "web_search"}],
-                tool_choice="required",
-                include=["web_search_call.action.sources"],
-            )
-            data = extract_json(response.output_text)
-            data.setdefault("_meta", {})["web_search_used"] = True
-            return data
-        except Exception as first_error:
-            raise RuntimeError(
-                "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
-                "De tool stopt bewust in plaats van arbeidsvoorwaarden uit de vacature over te nemen. "
-                f"Technische melding: {first_error}"
-            ) from first_error
 
+TECHNISCHE OUTPUTREGEL:
+- Geef uitsluitend één geldig JSON-object terug.
+- Geen markdown, geen codeblok, geen tekst voor of na het JSON-object.
+""".strip()
+
+        last_error = None
+        for attempt in range(2):
+            try:
+                response = client.responses.create(
+                    model=model,
+                    input=[
+                        {
+                            "role": "system",
+                            "content": system + " Gebruik live webonderzoek en geef alleen geldige JSON terug.",
+                        },
+                        {"role": "user", "content": web_prompt},
+                    ],
+                    tools=[{"type": "web_search"}],
+                    tool_choice="required",
+                    text={"format": {"type": "json_object"}},
+                    max_output_tokens=2500,
+                )
+
+                if getattr(response, "status", None) == "incomplete":
+                    reason = getattr(getattr(response, "incomplete_details", None), "reason", "onbekend")
+                    raise RuntimeError(f"OpenAI-response onvolledig: {reason}")
+
+                output_text = (getattr(response, "output_text", "") or "").strip()
+                if not output_text:
+                    raise RuntimeError("OpenAI gaf geen tekstoutput terug.")
+
+                data = json.loads(output_text)
+                if not isinstance(data, dict):
+                    raise RuntimeError("OpenAI gaf geen JSON-object terug.")
+                data.setdefault("_meta", {})["web_search_used"] = True
+                return data
+            except Exception as exc:
+                last_error = exc
+                web_prompt += "\n\nHERSTELPOGING: geef nu uitsluitend syntactisch geldige JSON volgens het gevraagde formaat."
+
+        raise RuntimeError(
+            "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
+            "De tool stopt bewust in plaats van gegevens uit de vacature over te nemen. "
+            f"Technische melding: {last_error}"
+        ) from last_error
+
+    # Niet-webcalls blijven via Chat Completions JSON mode lopen.
     chat = client.chat.completions.create(
         model=model,
         messages=[
@@ -1750,8 +1778,8 @@ Geef uitsluitend JSON terug.
         ],
         response_format={"type": "json_object"},
     )
-    return extract_json(chat.choices[0].message.content or "{}")
-
+    content = chat.choices[0].message.content or "{}"
+    return json.loads(content)
 
 def build_research_prompt(facts: Dict[str, Any], linkedin_size: str, vacature: str, intake: str) -> str:
     klant = facts.get("klantnaam", "")
