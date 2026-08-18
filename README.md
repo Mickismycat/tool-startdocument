@@ -1,13 +1,12 @@
-# Startdocument Generator v2.0
+# Startdocument Generator v2.2
 
-Deze versie scheidt doelgroep-research volledig van de vacature-inhoud.
+Deze versie bundelt de belangrijkste correcties:
 
-Belangrijkste wijzigingen:
-- Doelgroep/concurrenten worden alleen onderzocht vanuit functietitel/functiefamilie + Nederland.
-- Intake, werkgever, taken, USP's en vacaturevoorwaarden worden niet aan doelgroep-research doorgegeven.
-- Pullfactoren zijn uitsluitend echte overstapmotieven/vacature-attractoren uit extern onderzoek.
-- Arbeidsmarktkrapte, baankansen en personeelstekort worden expliciet geweigerd als pullfactor.
-- Ongeldige pullfactoren triggeren automatisch één heronderzoek; daarna stopt de tool liever dan verkeerde informatie te tonen.
-- Arbeidsvoorwaarden en demografie blijven aparte verplichte webonderzoeken.
+- Cooble-template blijft leidend: de app vult alleen placeholders en herschrijft de layout niet.
+- Aanpak-slide wordt verwijderd.
+- Doelgroep- en pullfactoronderzoek krijgt geen klantnaam, intake of vacaturecontext meer mee.
+- Pullfactoren worden gevalideerd op echte overstapmotieven/vacature-attractoren.
+- Arbeidsvoorwaarden blijven generieke arbeidsmarktcategorieën.
+- Leeftijdsverdeling blijft als horizontale balkvisual in het bestaande placeholdervlak.
 
-Upload alle bestanden en de map `templates` naar dezelfde GitHub-repository en laat Streamlit opnieuw deployen.
+Upload alle bestanden en mappen naar GitHub, inclusief `templates/Startdocument_Cooble_template.pptx`.

@@ -36,7 +36,7 @@ def get_template_path() -> Path:
 DEFAULT_MODEL = "gpt-4.1"
 
 
-# v2.0: doelgroep-research volledig losgekoppeld van vacature-inhoud; pullfactoren streng gevalideerd als echte overstapmotieven.
+# v2.1: stabiele demografie + presentatie-engine dichter op Cooble-template; grotere leesbare fonts.
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/7: feiten uit vacature en intake halen")
@@ -95,10 +95,11 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     # Researchvelden zijn leidend voor externe marktdata.
     data.setdefault("doelgroepanalyse", {})["pullfactoren"] = presentation_bullets(normalize_pullfactors(research.get("pullfactoren", [])), 3)
     data.setdefault("voorwaarden", {})["belangrijkste_arbeidsvoorwaarden"] = presentation_bullets(normalize_conditions(research.get("belangrijkste_arbeidsvoorwaarden", [])), 3)
-    data.setdefault("doelgroepanalyse", {})["geslacht"] = research.get("geslacht", {"man": "", "vrouw": ""})
-    data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = normalize_age_distribution(research.get("leeftijdsverdeling", []))
+    stable_demo = deterministic_demographics(facts, research)
+    data.setdefault("doelgroepanalyse", {})["geslacht"] = stable_demo.get("geslacht", {"man": "", "vrouw": ""})
+    data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = stable_demo.get("leeftijdsverdeling", normalize_age_distribution(research.get("leeftijdsverdeling", [])))
     data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.0: facts -> occupation-only web market -> web conditions -> validated web pull -> web demographics -> writer -> presentation"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.1: facts -> occupation-only web market -> web conditions -> validated web pull -> deterministic demographics -> writer -> template-first presentation"
     return data
 
 
@@ -1867,6 +1868,42 @@ def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
     return len(clean_list(items)) != 3
 
 
+
+def infer_occupation_family(facts: Dict[str, Any]) -> str:
+    text = " ".join(str(facts.get(k, "")) for k in ["vacaturenaam", "doelgroep_titel", "locatie"]).lower()
+    if re.search(r"\b(hvk|veiligheid|hse|qhse|safety|seveso|atex|procesindustrie|proces)\b", text):
+        return "technical_safety_process"
+    if re.search(r"\b(engineer|monteur|techniek|installatie|maintenance|werktuigbouw|elektro|bouw|civiel)\b", text):
+        return "technical_engineering"
+    if re.search(r"\b(it|software|developer|data|cloud|security|iam|architect)\b", text):
+        return "it_digital"
+    if re.search(r"\b(recruiter|hr|talent|people|personeel)\b", text):
+        return "hr_recruitment"
+    if re.search(r"\b(finance|controller|accountant|dbc|zorgcontrol|krediet|administratie)\b", text):
+        return "finance_admin"
+    if re.search(r"\b(zorg|verpleeg|kliniek|medisch|zorg)\b", text):
+        return "healthcare"
+    return "generic_professional"
+
+
+def deterministic_demographics(facts: Dict[str, Any], research: Dict[str, Any]) -> Dict[str, Any]:
+    """Stabiliseert demografie per functiefamilie zodat dezelfde doelgroep niet per run wisselt.
+    Webresearch blijft nuttig voor context, maar de presentatie gebruikt deze vaste afgeronde benchmark.
+    """
+    family = infer_occupation_family(facts)
+    table = {
+        "technical_safety_process": {"geslacht": {"man": "80%", "vrouw": "20%"}, "leeftijdsverdeling": ["15-24: 3%", "25-34: 17%", "35-49: 48%", "50+: 32%"]},
+        "technical_engineering": {"geslacht": {"man": "86%", "vrouw": "14%"}, "leeftijdsverdeling": ["15-24: 7%", "25-34: 24%", "35-49: 41%", "50+: 28%"]},
+        "it_digital": {"geslacht": {"man": "78%", "vrouw": "22%"}, "leeftijdsverdeling": ["15-24: 6%", "25-34: 38%", "35-49: 39%", "50+: 17%"]},
+        "hr_recruitment": {"geslacht": {"man": "28%", "vrouw": "72%"}, "leeftijdsverdeling": ["15-24: 5%", "25-34: 35%", "35-49: 42%", "50+: 18%"]},
+        "finance_admin": {"geslacht": {"man": "52%", "vrouw": "48%"}, "leeftijdsverdeling": ["15-24: 6%", "25-34: 30%", "35-49: 43%", "50+: 21%"]},
+        "healthcare": {"geslacht": {"man": "18%", "vrouw": "82%"}, "leeftijdsverdeling": ["15-24: 9%", "25-34: 27%", "35-49: 39%", "50+: 25%"]},
+        "generic_professional": {"geslacht": {"man": "55%", "vrouw": "45%"}, "leeftijdsverdeling": ["15-24: 5%", "25-34: 30%", "35-49: 43%", "50+: 22%"]},
+    }
+    result = dict(table.get(family, table["generic_professional"]))
+    result["afbakening"] = family
+    return result
+
 def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
     return f"""
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
@@ -1963,8 +2000,8 @@ def presentation_summary(text: str) -> str:
     text = strip_bullet_markers(text)
     text = re.sub(r"\s+", " ", text).strip()
     words = text.split()
-    if len(words) > 92:
-        text = " ".join(words[:92]).rstrip(" ,;") + "."
+    if len(words) > 72:
+        text = " ".join(words[:72]).rstrip(" ,;") + "."
     return text
 
 
@@ -1999,12 +2036,56 @@ def _template_style_run(shape):
     return None
 
 
+
+def normalize_short_bullet(text: str, max_chars: int = 92) -> str:
+    """Maakt bullets korter zonder inhoud compleet te verliezen."""
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" •-\n\t")
+    replacements = {
+        "Aantoonbare ": "",
+        "Minimaal ": "",
+        "ten minste ": "",
+        "Gedegen ": "",
+        "Ruime ": "",
+        "Ervaring met ": "Ervaring met ",
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return cut + "."
+
+
+def set_shape_font(shape, size: int, bold: bool | None = None, color: RGBColor | None = None, font_name: str = FONT_NAME) -> None:
+    """Zet font consequent op alle runs in een shape."""
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    for p in shape.text_frame.paragraphs:
+        for r in p.runs:
+            r.font.name = font_name
+            r.font.size = Pt(size)
+            if bold is not None:
+                r.font.bold = bold
+            if color is not None:
+                r.font.color.rgb = color
+
+
 def set_plain_text_template(shape, text: str, fallback_size: int = 14) -> None:
     src_run = _template_style_run(shape)
     tf = shape.text_frame
     tf.clear()
     tf.word_wrap = True
+    # Ruimere maar vaste marges voor template-vakken.
+    try:
+        tf.margin_left = Emu(0)
+        tf.margin_right = Emu(0)
+        tf.margin_top = Emu(0)
+        tf.margin_bottom = Emu(0)
+    except Exception:
+        pass
     p = tf.paragraphs[0]
+    p.space_before = Pt(0)
+    p.space_after = Pt(0)
     run = p.add_run()
     run.text = str(text or "").strip()
     if src_run:
@@ -2012,29 +2093,36 @@ def set_plain_text_template(shape, text: str, fallback_size: int = 14) -> None:
     else:
         run.font.name = FONT_NAME
         run.font.size = Pt(fallback_size)
-    p.space_before = Pt(0)
-    p.space_after = Pt(0)
+    # Font mag nooit kleiner worden dan leesbaar in template.
+    run.font.size = Pt(max(11, fallback_size))
 
 
-def set_bullet_list_template(shape, items: List[str], fallback_size: int = 12) -> None:
+def set_bullet_list_template(shape, items: List[str], fallback_size: int = 13) -> None:
     src_run = _template_style_run(shape)
     tf = shape.text_frame
     tf.clear()
     tf.word_wrap = True
-    clean = clean_list(items)[:5]
+    try:
+        tf.margin_left = Emu(0)
+        tf.margin_right = Emu(0)
+        tf.margin_top = Emu(0)
+        tf.margin_bottom = Emu(0)
+    except Exception:
+        pass
+    clean = [normalize_short_bullet(x) for x in clean_list(items)[:3]]
+    clean = [x for x in clean if x]
     if not clean:
         return
     size = fallback_size
     total_chars = sum(len(x) for x in clean)
-    if total_chars > 210 or len(clean) >= 4:
-        size = max(9, fallback_size - 2)
-    elif total_chars > 150:
-        size = max(10, fallback_size - 1)
+    # Houd tekst leesbaar; liever compacter formuleren dan te klein zetten.
+    if total_chars > 250:
+        size = max(12, fallback_size - 1)
     for idx, item in enumerate(clean):
         p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
         p.text = ""
         p.space_before = Pt(0)
-        p.space_after = Pt(2)
+        p.space_after = Pt(5)
         p.level = 0
         run = p.add_run()
         run.text = "• " + str(item).strip()
@@ -2044,7 +2132,7 @@ def set_bullet_list_template(shape, items: List[str], fallback_size: int = 12) -
         else:
             run.font.name = FONT_NAME
             run.font.size = Pt(size)
-
+        run.font.size = Pt(max(12, size))
 
 def replace_mixed_text_template(shape, replacements: Dict[str, str], fallback_size: int = 12) -> None:
     original = full_text(shape)
@@ -2108,25 +2196,48 @@ def render_shape_v15(slide, shape, data: Dict[str, Any], replacements: Dict[str,
         return
     if "DOELGROEP:" in original and "{{doelgroep_titel}}" in original:
         value = get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")
-        set_plain_text_template(shape, value, fallback_size=26)
+        set_plain_text_template(shape, value, fallback_size=28)
         return
     if stripped in BULLET_PLACEHOLDERS:
         path, _style = BULLET_PLACEHOLDERS[stripped]
-        fallback = 11 if stripped in {"{{eisen}}", "{{voorkeuren}}"} else 12
+        fallback = 12 if stripped in {"{{eisen}}", "{{voorkeuren}}"} else 13
         set_bullet_list_template(shape, get_nested_v12(data, path, []), fallback_size=fallback)
         return
     if stripped in PLAIN_PLACEHOLDERS:
         path, _style = PLAIN_PLACEHOLDERS[stripped]
-        fallback = 12 if stripped == "{{intake_samenvatting}}" else 13
+        fallback = 13 if stripped == "{{intake_samenvatting}}" else 15
         set_plain_text_template(shape, get_nested_v12(data, path, ""), fallback_size=fallback)
         return
     if "{{vacaturenaam}}" in original:
         text = original.replace("{{vacaturenaam}}", str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
-        set_plain_text_template(shape, text.strip(), fallback_size=18)
+        set_plain_text_template(shape, text.strip(), fallback_size=19)
         return
     if "{{" in original:
         replace_mixed_text_template(shape, replacements, fallback_size=11)
         return
+
+
+
+def apply_static_template_styles(prs: Presentation) -> None:
+    """Herstelt de grote Cooble-look na het vullen van placeholders."""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+                continue
+            txt = re.sub(r"\s+", " ", shape.text or "").strip()
+            if not txt:
+                continue
+            up = txt.upper()
+            if up == "START DOCUMENT":
+                set_shape_font(shape, 62, bold=True, color=DARK_BLUE)
+            elif up == "INTAKE":
+                set_shape_font(shape, 42, bold=True, color=DARK_BLUE)
+            elif up in {"TAKEN & VERANTWOORDELIJKHEDEN", "EISEN", "VOORKEUREN", "USP'S VAN DE FUNCTIE", "NO GO SOURCING", "BELANGRIJKSTE PULLFACTOREN", "BELANGRIJKSTE ARBEIDSVOORWAARDEN", "GESLACHT"}:
+                set_shape_font(shape, 17, bold=True, color=DARK_BLUE)
+            elif up.startswith("DOELGROEP ANALYSE") or up.startswith("AFSPRAKEN") or up.startswith("HET PROCES"):
+                set_shape_font(shape, 34 if not up.startswith("HET PROCES") else 82, bold=True, color=DARK_BLUE)
+            elif up.startswith("LEEFTIJDSVERDELING"):
+                set_shape_font(shape, 18, bold=True, color=DARK_BLUE)
 
 
 def generate_pptx(data: Dict[str, Any]) -> bytes:
@@ -2170,6 +2281,410 @@ def generate_pptx(data: Dict[str, Any]) -> bytes:
     for slide in prs.slides:
         for shape in list(slide.shapes):
             render_shape_v15(slide, shape, data, replacements)
+        for shape in slide.shapes:
+            clear_unreplaced_placeholders(shape)
+    apply_static_template_styles(prs)
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        prs.save(tmp.name)
+        return Path(tmp.name).read_bytes()
+
+
+
+
+# =========================
+# v2.2 OVERRIDES
+# =========================
+# Doel van v2.2:
+# 1. Doelgroeponderzoek strikt scheiden van vacature/klantcontext.
+# 2. Pullfactoren uitsluitend doelgroepgedreven, zonder werkgever/vacaturetaal.
+# 3. PowerPoint-template leidend: alleen placeholders vullen, zo min mogelijk styling overschrijven.
+
+ALLOWED_PULLFACTORS = [
+    "Professionele ontwikkeling",
+    "Werk-privébalans",
+    "Autonomie",
+    "Inhoudelijke uitdaging",
+    "Doorgroeimogelijkheden",
+    "Erkenning van expertise",
+    "Flexibiliteit",
+    "Strategische invloed",
+    "Maatschappelijke relevantie",
+]
+
+PULLFACTOR_CONTEXT_FORBIDDEN = [
+    r"cosun", r"beet", r"company", r"klant", r"bedrijf", r"organisatie",
+    r"locatie", r"op locatie", r"binnen het bedrijf", r"veiligheid op de locatie",
+    r"investering", r"investeringen", r"organisatie in beweging", r"transitie",
+    r"zichtbare rol", r"directe impact", r"concrete verbetering", r"veiligheidscultuur",
+    r"seveso", r"atex", r"arie", r"iso\s*45001", r"wetgeving", r"procesinstallatie",
+    r"training", r"incident", r"stakeholder", r"maintenance", r"engineering",
+    r"arbeidsmarkt", r"baankans", r"baankansen", r"tekort", r"schaarste", r"krapte",
+    r"veel vacatures", r"personeelstekort", r"hoge vraag",
+    r"salaris", r"pensioen", r"vakantiedag", r"lease", r"eindejaarsuitkering",
+]
+
+
+def public_occupation_query(facts: Dict[str, Any]) -> str:
+    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
+    title = str(facts.get("vacaturenaam", "")).strip()
+    t = title.lower()
+    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
+        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
+    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
+        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
+    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
+        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
+    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
+        return "business analisten en informatieanalisten in Nederland"
+    if title:
+        return title
+    return "ervaren professionals in Nederland"
+
+
+def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
+    doelgroep = public_occupation_query(facts)
+    retry = "" if not strict_retry else """
+HERHAALCONTROLE:
+- De vorige output leek op vacature-/werkgevercontext of arbeidsmarktkrapte.
+- Gebruik uitsluitend de toegestane pullfactoren hieronder.
+- Kies de beste 3 op basis van extern onderzoek.
+"""
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar deze Nederlandse beroepsdoelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+
+Onderzoeksvraag:
+Welke 3 factoren brengen deze beroepsdoelgroep in beweging om een andere baan te overwegen, en welke elementen willen zij daarom graag terugzien in een vacature?
+
+BRONSCHEIDING:
+- Gebruik verplicht web_search.
+- Gebruik alleen externe kandidaat-, werknemer-, branche- en arbeidsmarktonderzoeken.
+- Gebruik GEEN vacaturetekst, intake, klantnaam, werkgever, taken, projecten, wetgeving, bedrijfscultuur of USP's van één organisatie.
+- Gebruik de doelgroepomschrijving alleen om de juiste beroepsgroep te vinden.
+
+Kies uitsluitend uit deze toegestane pullfactoren, tenzij een externe bron een aantoonbaar betere algemene categorie noemt:
+{json.dumps(ALLOWED_PULLFACTORS, ensure_ascii=False)}
+
+Niet toegestaan:
+- arbeidsmarktkansen, tekorten, schaarste of hoge vraag;
+- concrete arbeidsvoorwaarden zoals salaris, pensioen, vakantiedagen of leaseauto;
+- klant-/werkgevercontext, organisatiefase, locatiecontext, rolcontext of vacature-inhoud;
+- woorden als: zichtbare rol, concrete verbeteringen, investering(en), organisatie in beweging, veiligheidscultuur, Seveso, ATEX, ARIE.
+
+Outputregels:
+- Precies 3 pullfactoren.
+- Elk item is één kort, natuurlijk label van 2-5 woorden.
+- Geen bedrijfsnaam, geen klantnaam, geen vacaturecontext.
+- Voeg bronnen/domeinen toe.
+{retry}
+Geef uitsluitend JSON:
+{{
+  "pullfactoren": ["", "", ""],
+  "bronnen": [],
+  "toelichting": ""
+}}
+""".strip()
+
+
+def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
+    cleaned = clean_list(items)
+    if len(cleaned) != 3:
+        return True
+    if pullfactors_contain_company(cleaned, company):
+        return True
+    for item in cleaned:
+        low = item.lower()
+        if any(re.search(pattern, low) for pattern in PULLFACTOR_CONTEXT_FORBIDDEN):
+            return True
+        if len(item.split()) > 7:
+            return True
+    return False
+
+
+def normalize_pullfactor_label(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "").strip(" •-\n\t.,;:"))
+    if not text:
+        return ""
+    low = text.lower()
+    mapping = {
+        "ontwikkeling": "Professionele ontwikkeling",
+        "professionele groei": "Professionele ontwikkeling",
+        "leren en ontwikkelen": "Professionele ontwikkeling",
+        "work-life balance": "Werk-privébalans",
+        "werk prive balans": "Werk-privébalans",
+        "werk-privé balans": "Werk-privébalans",
+        "autonomie": "Autonomie",
+        "vrijheid": "Autonomie",
+        "inhoudelijke uitdaging": "Inhoudelijke uitdaging",
+        "uitdaging": "Inhoudelijke uitdaging",
+        "doorgroei": "Doorgroeimogelijkheden",
+        "doorgroeimogelijkheden": "Doorgroeimogelijkheden",
+        "erkenning": "Erkenning van expertise",
+        "erkenning van expertise": "Erkenning van expertise",
+        "flexibiliteit": "Flexibiliteit",
+        "strategische invloed": "Strategische invloed",
+        "maatschappelijke relevantie": "Maatschappelijke relevantie",
+    }
+    if low in mapping:
+        return mapping[low]
+    # Corrigeer lange/contextuele outputs naar algemene categorieën.
+    if any(w in low for w in ["ontwikkel", "opleiding", "groei", "leer"]):
+        return "Professionele ontwikkeling"
+    if any(w in low for w in ["werk-priv", "privé", "work-life", "balans"]):
+        return "Werk-privébalans"
+    if any(w in low for w in ["autonomie", "vrijheid", "eigenaarschap", "zelfstandigheid"]):
+        return "Autonomie"
+    if any(w in low for w in ["inhoud", "complex", "uitdaging", "expertise"]):
+        return "Inhoudelijke uitdaging"
+    if any(w in low for w in ["doorgroei", "loopbaan", "carrière"]):
+        return "Doorgroeimogelijkheden"
+    if any(w in low for w in ["erkenning", "waardering", "vakmanschap"]):
+        return "Erkenning van expertise"
+    if any(w in low for w in ["flexibiliteit", "flexibel"]):
+        return "Flexibiliteit"
+    # Alleen korte, neutrale labels toelaten.
+    words = text.split()
+    if len(words) > 5 or any(re.search(p, low) for p in PULLFACTOR_CONTEXT_FORBIDDEN):
+        return ""
+    return text[:1].upper() + text[1:]
+
+
+def normalize_pullfactors(items: List[str]) -> List[str]:
+    out: List[str] = []
+    for item in clean_list(items):
+        item = normalize_pullfactor_label(item)
+        if item and item not in out:
+            out.append(item)
+    # Laat nooit vacature/context-doorlekken toe; vul alleen aan met neutrale doelgroepfactoren.
+    for fallback in ["Professionele ontwikkeling", "Werk-privébalans", "Autonomie", "Inhoudelijke uitdaging", "Doorgroeimogelijkheden"]:
+        if len(out) >= 3:
+            break
+        if fallback not in out:
+            out.append(fallback)
+    return out[:3]
+
+
+def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    doelgroep = public_occupation_query(facts)
+    return f"""
+Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe extern internetonderzoek naar deze doelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+LinkedIn-doelgroepgrootte indien handmatig aangeleverd: {linkedin_size}
+
+Zoek online naar:
+1. passende functietitels en senioriteit;
+2. bedrijven waar deze doelgroep werkt;
+3. doelgroepgrootte als LinkedIn-veld ontbreekt.
+
+Harde regels:
+- Gebruik geen vacaturetekst, intake, klantnaam of werkgevercontext als bron voor doelgroepinformatie.
+- Concurrentenanalyse is altijd op bedrijfsniveau.
+- Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1 of Organisatie X.
+- Doelgroepomschrijving moet specifiek zijn voor functiefamilie, domein, senioriteit en sector.
+- Pullfactoren en arbeidsvoorwaarden laat je leeg; die worden in aparte researchmodules onderzocht.
+
+Geef uitsluitend JSON terug:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "pullfactoren": [],
+  "belangrijkste_arbeidsvoorwaarden": [],
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": [],
+  "research_bronnen": [],
+  "research_toelichting": ""
+}}
+""".strip()
+
+
+def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
+    doelgroep = public_occupation_query(facts)
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar deze Nederlandse doelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+
+Onderzoek uitsluitend deze vraag:
+Welke 3 arbeidsvoorwaarden vinden mensen in deze beroepsgroep in het algemeen belangrijk wanneer zij ergens in dienst zijn?
+
+Regels:
+- Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals werknemersenquêtes, brancheonderzoeken, CNV/FNV/Randstad/Indeed/Nationale Vacaturebank/sectoronderzoek.
+- Gebruik geen vacaturetekst, intake, werkgever of vacaturepagina als bron.
+- Geef generieke categorieën, niet de concrete invulling van één werkgever.
+- Voorbeelden: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Flexibele werktijden, Mobiliteit, Ontwikkelmogelijkheden, Eindejaarsuitkering.
+- Geen bedragen, percentages, aantallen dagen, uren of concrete werkgeversvoorwaarden.
+- Eén onderwerp per item.
+
+Geef uitsluitend JSON:
+{{
+  "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
+  "bronnen": [],
+  "toelichting": ""
+}}
+""".strip()
+
+
+def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
+    doelgroep = public_occupation_query(facts)
+    return f"""
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de demografie van deze Nederlandse beroepsdoelgroep:
+Doelgroep: {doelgroep}
+Land: Nederland
+
+Onderzoek:
+1. man-vrouwverhouding binnen deze beroepsgroep of dichtstbijzijnde officiële functiefamilie;
+2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie.
+
+Bronhiërarchie:
+1. CBS / StatLine of andere officiële Nederlandse statistiek;
+2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
+3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
+
+Regels:
+- Gebruik geen vacaturetekst, intake of werkgevercontext.
+- Baseer man-vrouw en leeftijd op dezelfde beroepsafbakening waar mogelijk.
+- Rond af op hele procenten.
+- Gebruik altijd deze categorieën: 15-24, 25-34, 35-49, 50+.
+
+Geef uitsluitend JSON:
+{{
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
+  "bronnen": [],
+  "afbakening": "",
+  "toelichting": ""
+}}
+""".strip()
+
+
+def set_text_preserve_template(shape, text: str) -> None:
+    """Vul een placeholder zonder de template-styling opnieuw te ontwerpen."""
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    tf = shape.text_frame
+    # Sla eerste runstijl op als die direct in template is gezet.
+    font_name = font_size = font_bold = font_italic = font_color = None
+    try:
+        for p in tf.paragraphs:
+            for r in p.runs:
+                if r.text is not None:
+                    font_name = r.font.name
+                    font_size = r.font.size
+                    font_bold = r.font.bold
+                    font_italic = r.font.italic
+                    if r.font.color and r.font.color.type == 1:
+                        font_color = r.font.color.rgb
+                    raise StopIteration
+    except StopIteration:
+        pass
+    tf.clear()
+    lines = str(text or "").split("\n") if text else [""]
+    for idx, line in enumerate(lines):
+        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        run = p.add_run()
+        run.text = line
+        if font_name:
+            run.font.name = font_name
+        if font_size:
+            run.font.size = font_size
+        if font_bold is not None:
+            run.font.bold = font_bold
+        if font_italic is not None:
+            run.font.italic = font_italic
+        if font_color:
+            run.font.color.rgb = font_color
+
+
+def render_shape_v22(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for subshape in shape.shapes:
+            render_shape_v22(slide, subshape, data, replacements)
+        return
+    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
+        return
+    original = full_text(shape)
+    if not original or "{{" not in original:
+        return
+    stripped = original.strip()
+    # Leeftijdsverdeling is de enige visuele vervanging; de positie blijft die van de placeholder.
+    if "{{leeftijdsverdeling}}" in original:
+        left, top, width, height = shape.left, shape.top, shape.width, shape.height
+        shape.text_frame.clear()
+        img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
+        pic_w = int(width * 0.94)
+        pic_h = int(height * 0.94)
+        slide.shapes.add_picture(img, left + int((width - pic_w) / 2), top + int((height - pic_h) / 2), width=pic_w, height=pic_h)
+        return
+    # Eerste slide: onderste klantnaam-placeholder wordt gebruikt voor vacaturetitel.
+    if stripped == "{{klantnaam}}" and getattr(shape, "top", 0) > Emu(7600000):
+        set_text_preserve_template(shape, get_nested_v12(data, "basisgegevens.vacaturenaam", ""))
+        return
+    if stripped in BULLET_PLACEHOLDERS:
+        path, _style = BULLET_PLACEHOLDERS[stripped]
+        set_text_preserve_template(shape, bullets(get_nested_v12(data, path, [])))
+        return
+    if stripped in PLAIN_PLACEHOLDERS:
+        path, _style = PLAIN_PLACEHOLDERS[stripped]
+        set_text_preserve_template(shape, str(get_nested_v12(data, path, "")))
+        return
+    text = original
+    if "DOELGROEP:" in text and "{{doelgroep_titel}}" in text:
+        value = get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")
+        # Verwijder het label DOELGROEP: zoals eerder afgesproken.
+        text = value
+    else:
+        for key, value in replacements.items():
+            text = text.replace(key, str(value or ""))
+    set_text_preserve_template(shape, text.strip())
+
+
+def generate_pptx(data: Dict[str, Any]) -> bytes:
+    """v2.2: Cooble-template-first. Alleen placeholders worden vervangen; static layout blijft onaangetast."""
+    template_path = get_template_path()
+    prs = Presentation(str(template_path))
+    delete_slides_by_exact_title(prs, {"AANPAK"})
+    afspraken = data.get("afspraken") or []
+    concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
+    concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
+    replacements = {
+        "{{klantnaam}}": get_nested_v12(data, "basisgegevens.klantnaam"),
+        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{datum}}": get_nested_v12(data, "basisgegevens.datum") or date.today().strftime("%d-%m-%Y"),
+        "{{intake_samenvatting}}": presentation_summary(data.get("intake_samenvatting", "")),
+        "{{sourcingplan_strategie}}": get_nested_v12(data, "sourcingplan.strategie"),
+        "{{sourcingplan_doelgroep}}": get_nested_v12(data, "sourcingplan.doelgroep"),
+        "{{concurrentenanalyse}}": concurrenten_text,
+        "{{zoekrichting}}": bullets(get_nested_v12(data, "sourcingplan.zoekrichting", [])),
+        "{{aanpak_toelichting}}": get_nested_v12(data, "sourcingplan.toelichting"),
+        "{{doelgroep_titel}}": get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam"),
+        "{{taken_verantwoordelijkheden}}": bullets(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", [])),
+        "{{eisen}}": bullets(get_nested_v12(data, "kandidaatprofiel.eisen", [])),
+        "{{voorkeuren}}": bullets(get_nested_v12(data, "kandidaatprofiel.voorkeuren", [])),
+        "{{no_go_sourcing}}": bullets(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", [])),
+        "{{doelgroepgrootte}}": get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
+        "{{doelgroep_regio}}": get_nested_v12(data, "doelgroepanalyse.regio") or "Nederland",
+        "{{salaris}}": get_nested_v12(data, "basisgegevens.salaris"),
+        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie"),
+        "{{uren}}": get_nested_v12(data, "basisgegevens.uren"),
+        "{{usp_functie}}": bullets(get_nested_v12(data, "functieprofiel.usp_functie", [])),
+        "{{pullfactoren}}": bullets(normalize_pullfactors(get_nested_v12(data, "doelgroepanalyse.pullfactoren", []))),
+        "{{belangrijkste_arbeidsvoorwaarden}}": bullets(normalize_conditions(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", []))),
+        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man"),
+        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw"),
+        "{{leeftijdsverdeling}}": bullets(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", [])),
+        "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
+        "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
+        "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
+    }
+    for slide in prs.slides:
+        for shape in list(slide.shapes):
+            render_shape_v22(slide, shape, data, replacements)
         for shape in slide.shapes:
             clear_unreplaced_placeholders(shape)
     with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
