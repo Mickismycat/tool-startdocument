@@ -85,10 +85,10 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
         status.write("Stap 7/7: business rules toepassen")
     data = apply_business_rules(data, intake + "\n" + extra, linkedin_size, vacature, extra)
     # Researchvelden zijn leidend voor externe marktdata.
-    data.setdefault("doelgroepanalyse", {})["pullfactoren"] = presentation_bullets(research.get("pullfactoren", []), 3)
+    data.setdefault("doelgroepanalyse", {})["pullfactoren"] = presentation_bullets(normalize_pullfactors(research.get("pullfactoren", [])), 3)
     data.setdefault("voorwaarden", {})["belangrijkste_arbeidsvoorwaarden"] = presentation_bullets(normalize_conditions(research.get("belangrijkste_arbeidsvoorwaarden", [])), 3)
     data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v1.6: facts -> market web -> conditions web -> pull web -> writer -> presentation"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v1.8: facts -> required live web market -> required live web conditions -> required live web pull -> writer -> presentation"
     return data
 
 
@@ -254,16 +254,33 @@ def infer_competitors_offline(vacature_text: str, intake_text: str, current: Lis
 
 
 def normalize_condition_label(text: str) -> str:
-    """Maakt arbeidsvoorwaarden generiek: 29 vakantiedagen -> Vakantiedagen."""
+    """Normaliseer onderzoeksresultaten naar één generieke arbeidsvoorwaardencategorie.
+
+    Concrete aantallen/bedragen uit werkgeversvacatures mogen nooit in de slide terechtkomen.
+    """
     text = str(text or "").strip(" •-\n\t")
-    text = re.sub(r"^\d+\s*(?:\+\s*\d+\s*)?(?:verlof)?dagen\b.*", "Vakantiedagen", text, flags=re.I)
-    text = re.sub(r"^\d+\s*uur\b.*", "Werkuren", text, flags=re.I)
-    text = re.sub(r"^€\s*[\d\.,]+.*", "Salaris", text, flags=re.I)
-    text = re.sub(r"\bgoede\b\s+", "", text, flags=re.I).strip()
-    if text.lower() in {"verlofdagen", "vakantie", "vrije dagen"}:
-        text = "Vakantiedagen"
-    if text.lower() in {"thuiswerken", "mogelijkheid om thuis te werken", "remote werken"}:
-        text = "Hybride werken"
+    low = text.lower()
+    category_rules = [
+        (("salaris", "loon", "beloning", "pay", "salary"), "Salaris"),
+        (("pensioen",), "Pensioenregeling"),
+        (("vakantie", "verlof", "adv", "vrije dagen"), "Vakantiedagen"),
+        (("hybride", "thuiswerk", "remote", "flexibel werken"), "Hybride werken"),
+        (("opleiding", "training", "ontwikkeling", "studiebudget", "leerbudget"), "Ontwikkelmogelijkheden"),
+        (("mobiliteit", "leaseauto", "auto van de zaak", "reiskosten", "ov-vergoeding", "fietsregeling"), "Mobiliteit"),
+        (("bonus", "variabele beloning"), "Bonusregeling"),
+        (("eindejaarsuitkering", "13e maand", "dertiende maand"), "Eindejaarsuitkering"),
+        (("werktijd", "werkweek", "uren", "rooster"), "Flexibele werktijden"),
+        (("vitaliteit", "fitness", "gezondheid"), "Vitaliteitsregeling"),
+    ]
+    for needles, label in category_rules:
+        if any(n in low for n in needles):
+            return label
+    # Geen cijfers/percentages/bedragen toelaten in resterende labels.
+    text = re.sub(r"€?\s*\d[\d\.,%/-]*", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,;-:")
+    # Houd labels kort; concrete zinnen zijn niet gewenst.
+    if len(text.split()) > 4:
+        text = " ".join(text.split()[:4])
     return text[:1].upper() + text[1:] if text else text
 
 
@@ -275,15 +292,51 @@ def normalize_conditions(items: List[str]) -> List[str]:
             out.append(item)
     return out[:3]
 
+
+def normalize_pullfactor_label(text: str) -> str:
+    """Maak pullfactoren compact, natuurlijk en presentatiewaardig zonder losse/rare fragmenten."""
+    text = str(text or "").strip(" •-\n\t.,;:")
+    text = re.sub(r"\s+", " ", text)
+    if not text:
+        return ""
+    # Vang te losse éénwoord-items af die zonder context vreemd ogen.
+    replacements = {
+        "certificering": "Erkende certificeringen",
+        "ontwikkeling": "Professionele ontwikkeling",
+        "autonomie": "Meer autonomie",
+        "doorgroei": "Doorgroeimogelijkheden",
+        "flexibiliteit": "Meer flexibiliteit",
+        "impact": "Zichtbare impact",
+        "uitdaging": "Inhoudelijke uitdaging",
+        "zekerheid": "Baanzekerheid",
+    }
+    low = text.lower()
+    if low in replacements:
+        text = replacements[low]
+    # Pullfactoren moeten korte labels of korte natuurlijke zinnen zijn.
+    words = text.split()
+    if len(words) > 9:
+        text = " ".join(words[:9]).rstrip(" ,;:-")
+    return text[:1].upper() + text[1:] if text else text
+
+
+def normalize_pullfactors(items: List[str]) -> List[str]:
+    out: List[str] = []
+    for item in clean_list(items):
+        item = normalize_pullfactor_label(item)
+        if item and item not in out:
+            out.append(item)
+    return out[:3]
+
 def normalize_salary_display(value: str) -> str:
-    """Toon salaris altijd als alleen een getal, schaalnummer of range; nooit tekst/€ / bruto / per maand."""
+    """Toon salaris als alleen getal/range; bij salarisschalen mag het woord 'Schaal' blijven staan."""
     text = str(value or "").strip()
     if not text:
         return ""
-    # Schaalnotatie: "Schaal 8/9/10" -> "8/9/10"
+    # Schaalnotatie: "Schaal 8/9/10" -> "Schaal 8/9/10"
     m = re.search(r"(?i)\bschaal\s*([0-9]+(?:\s*/\s*[0-9]+)*)", text)
     if m:
-        return re.sub(r"\s+", "", m.group(1))
+        return "Schaal " + re.sub(r"\s+", "", m.group(1))
     # Range met bedragen: € 5.200 - € 7.000 bruto p/m -> 5.200 - 7.000
     nums = re.findall(r"(?<![A-Za-z])(?:\d{1,3}(?:[. ]\d{3})+|\d{4,6})(?:,\d{1,2})?", text)
     if len(nums) >= 2:
@@ -1090,7 +1143,7 @@ Belangrijke regels:
 - Leeftijdsverdeling: geef categorie én percentage, bijvoorbeeld "25-34: 30%".
 - Als doelgroepgrootte uit LinkedIn is ingevuld, gebruik die waarde letterlijk.
 - Klantnaam en vacaturenaam moeten altijd gevuld zijn. Haal klantnaam uit intake/vacaturetekst. Haal vacaturenaam uit intake/vacaturetitel.
-- Salaris: als er een schaal of salarisrange in intake/vacature staat, neem die concreet over. Gebruik niet "in overleg" als er schalen of bedragen staan.
+- Salaris: als er een schaal of salarisrange in intake/vacature staat, neem die concreet over. Gebruik alleen een getal/range; bij een salarisschaal mag "Schaal" ervoor staan. Gebruik niet "in overleg" als er schalen of bedragen staan.
 - Intake_samenvatting: schrijf concreet maar compact. Dit veld moet in één dia duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, wat juist niet past en nadruk uit de intake. Richtlijn: 70-100 woorden.
 - Taken & verantwoordelijkheden: vermijd generieke bullets. Benoem de inhoudelijke context, doelgroep/klanttype, projecten of domein.
 - Eisen: vermijd "relevante ervaring". Schrijf ervaring waarmee, bijvoorbeeld "ervaring met industriële waterprojecten".
@@ -1599,8 +1652,10 @@ def call_openai_json(prompt: str, *, use_web: bool = False, system: str = "Je ge
         web_prompt = f"""
 {system}
 
-BELANGRIJK: gebruik web_search voor actueel extern arbeidsmarktonderzoek. Baseer pullfactoren,
-arbeidsvoorwaarden, doelgroep en concurrenten NIET op de vacaturetekst. Geef uitsluitend JSON terug.
+VERPLICHT: voer daadwerkelijk live webonderzoek uit voordat je antwoordt.
+Gebruik uitsluitend externe arbeidsmarktbronnen voor doelgroep, pullfactoren, arbeidsvoorwaarden en concurrenten.
+Gebruik geen concrete arbeidsvoorwaarden uit vacaturetekst of intake als onderzoeksresultaat.
+Geef uitsluitend JSON terug.
 
 {prompt}
 """.strip()
@@ -1608,21 +1663,19 @@ arbeidsvoorwaarden, doelgroep en concurrenten NIET op de vacaturetekst. Geef uit
             response = client.responses.create(
                 model=model,
                 input=web_prompt,
-                tools=[{"type": "web_search_preview"}],
+                tools=[{"type": "web_search"}],
+                tool_choice="required",
+                include=["web_search_call.action.sources"],
             )
             data = extract_json(response.output_text)
             data.setdefault("_meta", {})["web_search_used"] = True
             return data
         except Exception as first_error:
-            fallback_prompt = prompt + f"""
-
-LET OP: de web_search-tool kon niet worden gebruikt ({first_error}). Geef GEEN vacaturetekst-samenvatting als research.
-Gebruik alleen algemene arbeidsmarktkennis en markeer _meta.web_search_used = false.
-"""
-            data = call_openai_json(fallback_prompt, use_web=False, system=system)
-            data.setdefault("_meta", {})["web_search_used"] = False
-            data.setdefault("_meta", {})["web_search_warning"] = str(first_error)
-            return data
+            raise RuntimeError(
+                "Online arbeidsmarktonderzoek kon niet worden uitgevoerd. "
+                "De tool stopt bewust in plaats van arbeidsvoorwaarden uit de vacature over te nemen. "
+                f"Technische melding: {first_error}"
+            ) from first_error
 
     chat = client.chat.completions.create(
         model=model,
@@ -1691,20 +1744,20 @@ Geef uitsluitend JSON terug:
 
 def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
     return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse doelgroep voor:
-Functie: {facts.get('vacaturenaam','')}
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse arbeidsmarkt voor deze doelgroep:
+Functie/doelgroep: {facts.get('vacaturenaam','')}
 Locatie/regio: {facts.get('locatie','Nederland')}
-Nuances/senioriteit: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
 
 Onderzoek uitsluitend deze vraag:
-WELKE ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP BELANGRIJK WANNEER ZIJ IN DIENST ZIJN?
+WELKE 3 ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP IN HET ALGEMEEN HET BELANGRIJKST WANNEER ZIJ IN DIENST ZIJN?
 
 Regels:
-- Gebruik web_search en externe arbeidsmarktbronnen.
-- Gebruik de vacature en intake NIET als bron voor het antwoord.
-- Denk aan categorieën zoals salaris, pensioen, verlof, flexibiliteit/hybride, mobiliteit, opleidingsbudget, bonus of werktijden, maar kies alleen wat onderzoek voor deze doelgroep ondersteunt.
-- Geef precies 3 korte categorieën, één onderwerp per item.
-- Geen concrete werkgeversvoorwaarden of aantallen dagen/bedragen.
+- Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals arbeidsmarktonderzoeken, werknemersenquêtes, brancheonderzoeken en relevante doelgroepstudies.
+- Gebruik de vacaturetekst, intake, werkgever en diens vacaturepagina NIET als bron.
+- Zoek dus niet naar wat DEZE werkgever aanbiedt, maar naar wat DEZE DOELGROEP belangrijk vindt.
+- Geef precies 3 generieke categorieën, bijvoorbeeld: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling of Flexibele werktijden.
+- Eén onderwerp per item.
+- Geen bedragen, percentages, aantallen dagen, uren of andere concrete werkgeversvoorwaarden.
 - Voeg bronnen/domeinen toe.
 
 Geef uitsluitend JSON:
@@ -1721,16 +1774,18 @@ def build_pullfactors_research_prompt(facts: Dict[str, Any]) -> str:
 Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse doelgroep voor:
 Functie: {facts.get('vacaturenaam','')}
 Locatie/regio: {facts.get('locatie','Nederland')}
-Nuances/senioriteit: {json.dumps(facts.get('nuances', []), ensure_ascii=False)}
 
 Onderzoek uitsluitend deze vraag:
 WAT BRENGT DEZE DOELGROEP IN BEWEGING OM NAAR EEN ANDERE BAAN TE KIJKEN, EN WAT WILLEN ZIJ GRAAG TERUGZIEN IN EEN VACATURE?
 
 Regels:
-- Gebruik web_search en externe arbeidsmarktbronnen.
+- Gebruik VERPLICHT web_search en baseer het antwoord op externe arbeidsmarktbronnen, werknemers-/kandidaatonderzoek, brancheonderzoek en doelgroepstudies.
 - Gebruik de vacature en intake NIET als bron voor het antwoord.
-- Pullfactoren gaan over overstapmotieven/vacature-aantrekkelijkheid, niet over een opsomming van secundaire arbeidsvoorwaarden.
-- Geef precies 3 korte, zelfverzekerde labels; één onderwerp per item.
+- Pullfactoren gaan over overstapmotieven en wat deze doelgroep in een vacature wil terugzien; het zijn geen concrete arbeidsvoorwaarden.
+- Geef precies 3 nette, natuurlijke formuleringen. Elk item is óf een duidelijk zelfstandig label van 2-5 woorden óf een korte natuurlijke zin van maximaal 9 woorden.
+- Vermijd losse, contextloze woorden zoals "certificering", "ontwikkeling" of "cultuur". Schrijf bijvoorbeeld "Erkende certificeringen", "Professionele ontwikkeling" of "Sterke veiligheidscultuur".
+- Eén onderwerp per item; geen slash-combinaties en geen opsomming binnen één bullet.
+- Formuleer zelfverzekerd en professioneel, passend in een PowerPoint.
 - Voeg bronnen/domeinen toe.
 
 Geef uitsluitend JSON:
