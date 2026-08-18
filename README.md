@@ -1,11 +1,17 @@
-# Startdocument Generator v2.4
+# Startdocument Generator v2.4.1
 
-Deze versie scherpt het doelgroeponderzoek aan.
+Bugfix release voor v2.4. Herstelt de ontbrekende OpenAI-helperfuncties waardoor `call_openai_json` niet gedefinieerd was. Deze versie behoudt de strikte externe doelgroepresearch en de template-first PowerPoint-export.
 
-- Pullfactoren worden verplicht via live websearch onderzocht.
-- De pullfactor-module ontvangt geen vacaturetekst, intake, klantnaam, USP's, taken of voorwaarden.
-- De output mag uitsluitend bestaan uit neutrale baanwisselmotieven uit een vaste taxonomie.
-- Vacaturecontext, arbeidsmarktkrapte en concrete arbeidsvoorwaarden worden als pullfactor geblokkeerd.
-- Het Cooble PowerPoint-template blijft leidend; alleen placeholders worden gevuld.
+# Startdocument Generator v2.3
 
-Upload alle bestanden en de map `templates` naar GitHub.
+Deze versie gebruikt het opnieuw aangeleverde, correcte **Cooble-template** als vaste layout.
+
+## Belangrijkste wijzigingen
+- Het template bevat vaste placeholders op de exacte bestaande tekstposities.
+- De PowerPoint-code verandert **geen** fonts, lettergroottes, posities, marges of regelafstand.
+- Alleen placeholdertekst wordt vervangen; de leeftijdsverdeling gebruikt één vast beeldanker.
+- Man/vrouw en leeftijd komen uitsluitend uit verplicht webonderzoek; er zijn geen vaste, verzonnen demografische tabellen meer.
+- Demografie wordt afgerond in stappen van 5% voor meer stabiliteit tussen runs.
+- Als demografisch webonderzoek onvolledig is, volgt één automatische herhaalpoging; daarna stopt de tool in plaats van lege of verzonnen percentages te tonen.
+
+Upload alle bestanden en mappen naar GitHub, inclusief `templates/Startdocument_Cooble_template.pptx`.
