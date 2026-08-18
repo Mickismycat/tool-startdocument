@@ -498,6 +498,43 @@ def presentation_bullets(items: List[str], max_items: int = 3) -> List[str]:
     return out
 
 
+def compact_candidate_bullet(text: str, *, max_words: int = 11) -> str:
+    """Maak eisen/voorkeuren compact genoeg voor de kandidaat-slide, zonder betekenis weg te gooien."""
+    text = re.sub(r"\s+", " ", str(text or "").strip(" •-\n\t.,;:"))
+    if not text:
+        return ""
+    # Verwijder opvulwoorden die vaak veel ruimte innemen maar weinig toevoegen.
+    replacements = [
+        (r"\baantoonbare\b", ""),
+        (r"\bgedegen\b", ""),
+        (r"\bminimaal\s+", ""),
+        (r"\bten minste\s+", ""),
+        (r"\bervaring met\b", "Ervaring met"),
+        (r"\bkennis van\b", "Kennis van"),
+        (r"\bin een industriële context\b", "industrieel"),
+        (r"\bwerk- en denkniveau\b", "niveau"),
+        (r"\bpraktijkervaring\b", "ervaring"),
+    ]
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+    text = limit_words(text, max_words)
+    if text and not text.endswith((".", ")")):
+        text += "."
+    return text
+
+
+def compact_candidate_bullets(items: List[str], max_items: int = 3) -> List[str]:
+    out: List[str] = []
+    for item in presentation_bullets(items, max_items=max_items):
+        compact = compact_candidate_bullet(item)
+        if compact and compact not in out:
+            out.append(compact)
+        if len(out) >= max_items:
+            break
+    return out
+
+
 def presentation_summary(text: str) -> str:
     """Intake-samenvatting hoort één mooie lopende tekst te zijn, geen bullets en compact genoeg voor de slide."""
     text = strip_bullet_markers(text)
@@ -545,8 +582,8 @@ def apply_business_rules(data: Dict[str, Any], intake_text: str, linkedin_size: 
     f["taken_verantwoordelijkheden"] = presentation_bullets(f.get("taken_verantwoordelijkheden", []), 3)
     f["usp_functie"] = presentation_bullets(f.get("usp_functie", []), 3)
 
-    k["eisen"] = presentation_bullets(k.get("eisen", []), 3)
-    k["voorkeuren"] = presentation_bullets(k.get("voorkeuren", []), 3)
+    k["eisen"] = compact_candidate_bullets(k.get("eisen", []), 3)
+    k["voorkeuren"] = compact_candidate_bullets(k.get("voorkeuren", []), 3)
 
     # Pullfactoren en voorwaarden: één onderwerp per bullet, maximaal 3.
     d = data.setdefault("doelgroepanalyse", {})
@@ -1156,7 +1193,8 @@ Belangrijke regels:
 - No-go sourcing: geef uitsluitend bedrijfsnamen terug. Neem álle no-go/check-eerst organisaties uit de intake over. Geen toelichting, geen zinnen. Laat geen enkel bedrijf weg.
 - Pullfactoren zijn extern: bepaal ze vanuit arbeidsmarkt/doelgroep en internetonderzoek, niet uit de vacaturetekst.
 - Belangrijkste arbeidsvoorwaarden: niet uit de vacaturetekst halen. Onderzoek extern/arbeidsmarktgericht welke arbeidsvoorwaarden de doelgroep belangrijk vindt. Gebruik generieke labels zoals "Vakantiedagen", niet "29 vakantiedagen".
-- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items. Combineer nooit meerdere onderwerpen in één bullet.
+- Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
+- Eisen en voorkeuren zijn compact: maximaal 10 woorden per bullet, zonder opvulwoorden zoals 'relevante ervaring'. Combineer nooit meerdere onderwerpen in één bullet.
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
 - Houd lijsten kort: meestal precies 3 bullets, behalve no-go sourcing en concurrenten; die mogen meer bedrijven bevatten.
@@ -1299,6 +1337,7 @@ Belangrijke regels:
 - Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1, Organisatie X.
 - Doelgroepomschrijving moet specifiek zijn voor functie, domein, senioriteit en sector.
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
+- Eisen en voorkeuren zijn compact: maximaal 10 woorden per bullet, zonder opvulwoorden zoals 'relevante ervaring'.
 - Geen voorzichtige taal zoals "waarschijnlijk" of "mogelijk" in de uiteindelijke labels.
 - Als doelgroepgrootte uit LinkedIn is ingevuld, neem die letterlijk over.
 
@@ -1350,6 +1389,7 @@ Strenge schrijfrichtlijnen:
 - Concurrenten: echte bedrijfsnamen op bedrijfsniveau.
 - No-go sourcing: uitsluitend bedrijfsnamen uit feitenextractie. Niets toevoegen, niets weglaten.
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
+- Eisen en voorkeuren zijn compact: maximaal 10 woorden per bullet, zonder opvulwoorden zoals 'relevante ervaring'.
 - Vermijd generieke termen: relevante ervaring, passende kandidaat, dynamische omgeving, goede communicatieve vaardigheden, inhoudelijk specialistisch domein, spin in het web.
 
 {schema_hint()}
@@ -1422,6 +1462,7 @@ Regels:
 - Concurrenten moeten echte bedrijfsnamen zijn.
 - No-go sourcing blijft exact de bedrijven uit feitenextractie.
 - Eén bullet = één onderwerp. Lijsten voor taken/eisen/voorkeuren/USP/pullfactoren/arbeidsvoorwaarden bevatten precies 3 items.
+- Eisen en voorkeuren zijn compact: maximaal 10 woorden per bullet, zonder opvulwoorden zoals 'relevante ervaring'.
 
 FEITENEXTRACTIE:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
@@ -1636,7 +1677,10 @@ def editable_list(label: str, values: List[str], key: str, max_items: int = 6, *
         st.caption(f"Let op: dit onderdeel is automatisch teruggebracht naar maximaal {max_items} bullets.")
     for i in range(rows):
         default = values[i] if i < len(values) else ""
-        val = st.text_input(f"{label} {i+1}", value=default, key=f"{key}_{i}", label_visibility="collapsed")
+        if key.startswith("afspraken"):
+            val = st.text_area(f"{label} {i+1}", value=default, key=f"{key}_{i}", height=110, label_visibility="collapsed")
+        else:
+            val = st.text_input(f"{label} {i+1}", value=default, key=f"{key}_{i}", label_visibility="collapsed")
         if val.strip():
             result.append(val.strip())
     return result
@@ -1887,804 +1931,47 @@ def infer_occupation_family(facts: Dict[str, Any]) -> str:
 
 
 def deterministic_demographics(facts: Dict[str, Any], research: Dict[str, Any]) -> Dict[str, Any]:
-    """Stabiliseert demografie per functiefamilie zodat dezelfde doelgroep niet per run wisselt.
-    Webresearch blijft nuttig voor context, maar de presentatie gebruikt deze vaste afgeronde benchmark.
+    """v2.4.4: stabiele demografie per functiefamilie.
+
+    De webresearch bepaalt de afbakening/context, maar de presentatie gebruikt één
+    vaste benchmark per beroepsfamilie. Daardoor wisselen man/vrouw en leeftijd
+    niet meer per run voor dezelfde doelgroep.
     """
     family = infer_occupation_family(facts)
-    table = {
-        "technical_safety_process": {"geslacht": {"man": "80%", "vrouw": "20%"}, "leeftijdsverdeling": ["15-24: 3%", "25-34: 17%", "35-49: 48%", "50+: 32%"]},
-        "technical_engineering": {"geslacht": {"man": "86%", "vrouw": "14%"}, "leeftijdsverdeling": ["15-24: 7%", "25-34: 24%", "35-49: 41%", "50+: 28%"]},
-        "it_digital": {"geslacht": {"man": "78%", "vrouw": "22%"}, "leeftijdsverdeling": ["15-24: 6%", "25-34: 38%", "35-49: 39%", "50+: 17%"]},
-        "hr_recruitment": {"geslacht": {"man": "28%", "vrouw": "72%"}, "leeftijdsverdeling": ["15-24: 5%", "25-34: 35%", "35-49: 42%", "50+: 18%"]},
-        "finance_admin": {"geslacht": {"man": "52%", "vrouw": "48%"}, "leeftijdsverdeling": ["15-24: 6%", "25-34: 30%", "35-49: 43%", "50+: 21%"]},
-        "healthcare": {"geslacht": {"man": "18%", "vrouw": "82%"}, "leeftijdsverdeling": ["15-24: 9%", "25-34: 27%", "35-49: 39%", "50+: 25%"]},
-        "generic_professional": {"geslacht": {"man": "55%", "vrouw": "45%"}, "leeftijdsverdeling": ["15-24: 5%", "25-34: 30%", "35-49: 43%", "50+: 22%"]},
+    benchmarks = {
+        "technical_safety_process": {
+            "geslacht": {"man": "80%", "vrouw": "20%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 20%", "35-49: 45%", "50+: 30%"],
+        },
+        "technical_engineering": {
+            "geslacht": {"man": "85%", "vrouw": "15%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 25%", "35-49: 45%", "50+: 25%"],
+        },
+        "it_digital": {
+            "geslacht": {"man": "80%", "vrouw": "20%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 40%", "35-49: 40%", "50+: 15%"],
+        },
+        "hr_recruitment": {
+            "geslacht": {"man": "30%", "vrouw": "70%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 35%", "35-49: 45%", "50+: 15%"],
+        },
+        "finance_admin": {
+            "geslacht": {"man": "50%", "vrouw": "50%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 30%", "35-49: 45%", "50+: 20%"],
+        },
+        "healthcare": {
+            "geslacht": {"man": "20%", "vrouw": "80%"},
+            "leeftijdsverdeling": ["15-24: 10%", "25-34: 30%", "35-49: 40%", "50+: 20%"],
+        },
+        "generic_professional": {
+            "geslacht": {"man": "55%", "vrouw": "45%"},
+            "leeftijdsverdeling": ["15-24: 5%", "25-34: 30%", "35-49: 45%", "50+: 20%"],
+        },
     }
-    result = dict(table.get(family, table["generic_professional"]))
-    result["afbakening"] = family
+    result = dict(benchmarks.get(family, benchmarks["generic_professional"]))
+    result["afbakening"] = f"{family} — gestabiliseerde benchmark op basis van beroepsfamilie"
+    result["webresearch_bronnen"] = clean_list((research or {}).get("research_bronnen", []))
     return result
-
-def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
-Functie/functiefamilie: {facts.get('vacaturenaam','')}
-Land: Nederland
-
-Onderzoek uitsluitend:
-1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
-2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie/sector.
-
-Bronhiërarchie — gebruik bij iedere run in deze volgorde dezelfde bronsoorten:
-1. CBS / StatLine of andere officiële Nederlandse statistiek;
-2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
-3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
-Gebruik alleen een bredere sector als specifiekere beroepsdata niet beschikbaar is.
-
-Consistentieregels:
-- Baseer man-vrouw én leeftijd zoveel mogelijk op dezelfde beroepsafbakening en dezelfde bronfamilie.
-- Geef de meest recente beschikbare Nederlandse data prioriteit.
-- Rond percentages af op hele procenten.
-- Man + vrouw moet exact 100% zijn.
-- Leeftijdscategorieën moeten samen exact 100% zijn.
-- Gebruik ALTIJD deze leeftijdscategorieën: 15-24, 25-34, 35-49, 50+.
-- Maak geen vrije AI-schatting als er geen bruikbare bron is; gebruik dan de dichtstbijzijnde aantoonbare functiefamilie/sector en benoem dat in toelichting.
-- Gebruik geen informatie uit vacaturetekst of intake als demografische bron.
-
-Geef uitsluitend JSON:
-{{
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
-  "bronnen": [],
-  "afbakening": "",
-  "toelichting": ""
-}}
-""".strip()
-
-def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
-    functie = str(facts.get("vacaturenaam", "")).strip()
-    return f"""
-Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar de BEROEPSDOELGROEP achter deze functietitel:
-Functietitel/functiefamilie: {functie}
-Land: Nederland
-LinkedIn doelgroepgrootte: {linkedin_size}
-
-ZEER BELANGRIJK — BRONSCHEIDING:
-- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
-- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
-- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
-
-Onderzoek uitsluitend:
-1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
-2. gangbare vergelijkbare functietitels;
-3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
-4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
-
-Regels:
-- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
-- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
-- Gebruik echte bedrijfsnamen, nooit placeholders.
-- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
-- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
-
-Geef uitsluitend JSON:
-{{
-  "doelgroep_titel": "",
-  "doelgroep_omschrijving": "",
-  "verwachte_doelgroepgrootte": "",
-  "belangrijkste_functietitels": [],
-  "concurrenten_bedrijven": [],
-  "zoekrichting": [],
-  "bronnen": []
-}}
-""".strip()
-
-
-def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any], demographics: Dict[str, Any]) -> Dict[str, Any]:
-    result = dict(market or {})
-    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
-    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
-    result["geslacht"] = (demographics or {}).get("geslacht", {"man": "", "vrouw": ""})
-    result["leeftijdsverdeling"] = clean_list((demographics or {}).get("leeftijdsverdeling", []))[:4]
-    result["demografie_afbakening"] = (demographics or {}).get("afbakening", "")
-    result["research_bronnen"] = list(dict.fromkeys(
-        clean_list((market or {}).get("bronnen", [])) +
-        clean_list((conditions or {}).get("bronnen", [])) +
-        clean_list((pull or {}).get("bronnen", [])) +
-        clean_list((demographics or {}).get("bronnen", []))
-    ))
-    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden, pullfactoren en demografie zijn als aparte verplichte webonderzoeksvragen uitgevoerd."
-    return result
-
-def presentation_summary(text: str) -> str:
-    """Compacte intake-samenvatting voor de Cooble-template."""
-    text = strip_bullet_markers(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    words = text.split()
-    if len(words) > 72:
-        text = " ".join(words[:72]).rstrip(" ,;") + "."
-    return text
-
-
-def _copy_font_style(src_run, dst_run, fallback_size: int = 14) -> None:
-    """Gebruik zoveel mogelijk de stijl uit de template zelf."""
-    try:
-        dst_run.font.name = src_run.font.name or FONT_NAME
-    except Exception:
-        dst_run.font.name = FONT_NAME
-    try:
-        dst_run.font.size = src_run.font.size or Pt(fallback_size)
-    except Exception:
-        dst_run.font.size = Pt(fallback_size)
-    try:
-        dst_run.font.bold = src_run.font.bold
-    except Exception:
-        pass
-    try:
-        if src_run.font.color and src_run.font.color.rgb:
-            dst_run.font.color.rgb = src_run.font.color.rgb
-    except Exception:
-        pass
-
-
-def _template_style_run(shape):
-    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
-        return None
-    for p in shape.text_frame.paragraphs:
-        for r in p.runs:
-            if r.text.strip():
-                return r
-    return None
-
-
-
-def normalize_short_bullet(text: str, max_chars: int = 92) -> str:
-    """Maakt bullets korter zonder inhoud compleet te verliezen."""
-    text = re.sub(r"\s+", " ", str(text or "")).strip(" •-\n\t")
-    replacements = {
-        "Aantoonbare ": "",
-        "Minimaal ": "",
-        "ten minste ": "",
-        "Gedegen ": "",
-        "Ruime ": "",
-        "Ervaring met ": "Ervaring met ",
-    }
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-    if len(text) <= max_chars:
-        return text
-    cut = text[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
-    return cut + "."
-
-
-def set_shape_font(shape, size: int, bold: bool | None = None, color: RGBColor | None = None, font_name: str = FONT_NAME) -> None:
-    """Zet font consequent op alle runs in een shape."""
-    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
-        return
-    for p in shape.text_frame.paragraphs:
-        for r in p.runs:
-            r.font.name = font_name
-            r.font.size = Pt(size)
-            if bold is not None:
-                r.font.bold = bold
-            if color is not None:
-                r.font.color.rgb = color
-
-
-def set_plain_text_template(shape, text: str, fallback_size: int = 14) -> None:
-    src_run = _template_style_run(shape)
-    tf = shape.text_frame
-    tf.clear()
-    tf.word_wrap = True
-    # Ruimere maar vaste marges voor template-vakken.
-    try:
-        tf.margin_left = Emu(0)
-        tf.margin_right = Emu(0)
-        tf.margin_top = Emu(0)
-        tf.margin_bottom = Emu(0)
-    except Exception:
-        pass
-    p = tf.paragraphs[0]
-    p.space_before = Pt(0)
-    p.space_after = Pt(0)
-    run = p.add_run()
-    run.text = str(text or "").strip()
-    if src_run:
-        _copy_font_style(src_run, run, fallback_size)
-    else:
-        run.font.name = FONT_NAME
-        run.font.size = Pt(fallback_size)
-    # Font mag nooit kleiner worden dan leesbaar in template.
-    run.font.size = Pt(max(11, fallback_size))
-
-
-def set_bullet_list_template(shape, items: List[str], fallback_size: int = 13) -> None:
-    src_run = _template_style_run(shape)
-    tf = shape.text_frame
-    tf.clear()
-    tf.word_wrap = True
-    try:
-        tf.margin_left = Emu(0)
-        tf.margin_right = Emu(0)
-        tf.margin_top = Emu(0)
-        tf.margin_bottom = Emu(0)
-    except Exception:
-        pass
-    clean = [normalize_short_bullet(x) for x in clean_list(items)[:3]]
-    clean = [x for x in clean if x]
-    if not clean:
-        return
-    size = fallback_size
-    total_chars = sum(len(x) for x in clean)
-    # Houd tekst leesbaar; liever compacter formuleren dan te klein zetten.
-    if total_chars > 250:
-        size = max(12, fallback_size - 1)
-    for idx, item in enumerate(clean):
-        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
-        p.text = ""
-        p.space_before = Pt(0)
-        p.space_after = Pt(5)
-        p.level = 0
-        run = p.add_run()
-        run.text = "• " + str(item).strip()
-        if src_run:
-            _copy_font_style(src_run, run, size)
-            run.font.size = Pt(size)
-        else:
-            run.font.name = FONT_NAME
-            run.font.size = Pt(size)
-        run.font.size = Pt(max(12, size))
-
-def replace_mixed_text_template(shape, replacements: Dict[str, str], fallback_size: int = 12) -> None:
-    original = full_text(shape)
-    text = original
-    for key, value in replacements.items():
-        text = text.replace(key, str(value or ""))
-    if "{{" not in original:
-        return
-    set_plain_text_template(shape, text.strip(), fallback_size=fallback_size)
-
-
-def create_age_chart_image(items: List[str]) -> BytesIO:
-    import matplotlib.pyplot as plt
-    labels, values = parse_age_items(items)
-    labels = [str(x).replace(" jaar", "").replace(" ", "") for x in labels]
-    fig, ax = plt.subplots(figsize=(5.2, 2.35), dpi=190)
-    fig.patch.set_alpha(0)
-    ax.set_facecolor("none")
-    ax.set_xlim(-24, 112)
-    ax.set_ylim(-0.5, len(labels) - 0.5)
-    ax.axis("off")
-    accent = "#5A4BD8"
-    track = "#EEF0F4"
-    label_color = "#111111"
-    for i, (label, value) in enumerate(zip(labels, values)):
-        y = len(labels) - 1 - i
-        ax.text(-23, y, label, va="center", ha="left", fontsize=10, color=label_color)
-        ax.plot([0, 100], [y, y], color=track, linewidth=13, solid_capstyle="round")
-        ax.plot([0, min(value, 100)], [y, y], color=accent, linewidth=13, solid_capstyle="round")
-        ax.text(109, y, f"{int(round(value))}%", va="center", ha="right", fontsize=10.5, fontweight="bold", color=label_color)
-    buf = BytesIO()
-    plt.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.02)
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-def render_shape_v15(slide, shape, data: Dict[str, Any], replacements: Dict[str, str]) -> None:
-    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-        for subshape in shape.shapes:
-            render_shape_v15(slide, subshape, data, replacements)
-        return
-    if not (hasattr(shape, "text_frame") and shape.has_text_frame):
-        return
-    original = full_text(shape)
-    if not original:
-        return
-    stripped = original.strip()
-    if "{{leeftijdsverdeling}}" in original:
-        left, top, width, height = shape.left, shape.top, shape.width, shape.height
-        shape.text_frame.clear()
-        img = create_age_chart_image(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", []))
-        pic_w = int(width * 0.92)
-        pic_h = int(height * 0.92)
-        pic_left = left + int((width - pic_w) / 2)
-        pic_top = top + int((height - pic_h) / 2)
-        slide.shapes.add_picture(img, pic_left, pic_top, width=pic_w, height=pic_h)
-        return
-    if stripped == "{{klantnaam}}" and getattr(shape, "top", 0) > Emu(7600000):
-        set_plain_text_template(shape, get_nested_v12(data, "basisgegevens.vacaturenaam", ""), fallback_size=24)
-        return
-    if "DOELGROEP:" in original and "{{doelgroep_titel}}" in original:
-        value = get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam", "")
-        set_plain_text_template(shape, value, fallback_size=28)
-        return
-    if stripped in BULLET_PLACEHOLDERS:
-        path, _style = BULLET_PLACEHOLDERS[stripped]
-        fallback = 12 if stripped in {"{{eisen}}", "{{voorkeuren}}"} else 13
-        set_bullet_list_template(shape, get_nested_v12(data, path, []), fallback_size=fallback)
-        return
-    if stripped in PLAIN_PLACEHOLDERS:
-        path, _style = PLAIN_PLACEHOLDERS[stripped]
-        fallback = 13 if stripped == "{{intake_samenvatting}}" else 15
-        set_plain_text_template(shape, get_nested_v12(data, path, ""), fallback_size=fallback)
-        return
-    if "{{vacaturenaam}}" in original:
-        text = original.replace("{{vacaturenaam}}", str(get_nested_v12(data, "basisgegevens.vacaturenaam", "")))
-        set_plain_text_template(shape, text.strip(), fallback_size=19)
-        return
-    if "{{" in original:
-        replace_mixed_text_template(shape, replacements, fallback_size=11)
-        return
-
-
-
-def apply_static_template_styles(prs: Presentation) -> None:
-    """Herstelt de grote Cooble-look na het vullen van placeholders."""
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if not (hasattr(shape, "text_frame") and shape.has_text_frame):
-                continue
-            txt = re.sub(r"\s+", " ", shape.text or "").strip()
-            if not txt:
-                continue
-            up = txt.upper()
-            if up == "START DOCUMENT":
-                set_shape_font(shape, 62, bold=True, color=DARK_BLUE)
-            elif up == "INTAKE":
-                set_shape_font(shape, 42, bold=True, color=DARK_BLUE)
-            elif up in {"TAKEN & VERANTWOORDELIJKHEDEN", "EISEN", "VOORKEUREN", "USP'S VAN DE FUNCTIE", "NO GO SOURCING", "BELANGRIJKSTE PULLFACTOREN", "BELANGRIJKSTE ARBEIDSVOORWAARDEN", "GESLACHT"}:
-                set_shape_font(shape, 17, bold=True, color=DARK_BLUE)
-            elif up.startswith("DOELGROEP ANALYSE") or up.startswith("AFSPRAKEN") or up.startswith("HET PROCES"):
-                set_shape_font(shape, 34 if not up.startswith("HET PROCES") else 82, bold=True, color=DARK_BLUE)
-            elif up.startswith("LEEFTIJDSVERDELING"):
-                set_shape_font(shape, 18, bold=True, color=DARK_BLUE)
-
-
-def generate_pptx(data: Dict[str, Any]) -> bytes:
-    """v1.5: template-first renderer. Houdt Cooble-layout leidend en vult alleen placeholders."""
-    template_path = get_template_path()
-    prs = Presentation(str(template_path))
-    delete_slides_by_exact_title(prs, {"AANPAK"})
-    afspraken = data.get("afspraken") or []
-    concurrenten = get_nested_v12(data, "concurrentenanalyse.bedrijven", [])
-    concurrenten_text = bullets(concurrenten) or get_nested_v12(data, "concurrentenanalyse.toelichting", "")
-    replacements = {
-        "{{klantnaam}}": get_nested_v12(data, "basisgegevens.klantnaam"),
-        "{{vacaturenaam}}": get_nested_v12(data, "basisgegevens.vacaturenaam"),
-        "{{datum}}": get_nested_v12(data, "basisgegevens.datum") or date.today().strftime("%d-%m-%Y"),
-        "{{intake_samenvatting}}": presentation_summary(data.get("intake_samenvatting", "")),
-        "{{sourcingplan_strategie}}": get_nested_v12(data, "sourcingplan.strategie"),
-        "{{sourcingplan_doelgroep}}": get_nested_v12(data, "sourcingplan.doelgroep"),
-        "{{concurrentenanalyse}}": concurrenten_text,
-        "{{zoekrichting}}": bullets(get_nested_v12(data, "sourcingplan.zoekrichting", [])),
-        "{{aanpak_toelichting}}": get_nested_v12(data, "sourcingplan.toelichting"),
-        "{{doelgroep_titel}}": get_nested_v12(data, "doelgroepanalyse.doelgroep_titel") or get_nested_v12(data, "basisgegevens.vacaturenaam"),
-        "{{taken_verantwoordelijkheden}}": bullets(get_nested_v12(data, "functieprofiel.taken_verantwoordelijkheden", [])),
-        "{{eisen}}": bullets(get_nested_v12(data, "kandidaatprofiel.eisen", [])),
-        "{{voorkeuren}}": bullets(get_nested_v12(data, "kandidaatprofiel.voorkeuren", [])),
-        "{{no_go_sourcing}}": bullets(get_nested_v12(data, "kandidaatprofiel.no_go_sourcing", [])),
-        "{{doelgroepgrootte}}": get_nested_v12(data, "doelgroepanalyse.verwachte_doelgroepgrootte"),
-        "{{doelgroep_regio}}": get_nested_v12(data, "doelgroepanalyse.regio") or "Nederland",
-        "{{salaris}}": get_nested_v12(data, "basisgegevens.salaris"),
-        "{{locatie}}": get_nested_v12(data, "basisgegevens.locatie"),
-        "{{uren}}": get_nested_v12(data, "basisgegevens.uren"),
-        "{{usp_functie}}": bullets(get_nested_v12(data, "functieprofiel.usp_functie", [])),
-        "{{pullfactoren}}": bullets(get_nested_v12(data, "doelgroepanalyse.pullfactoren", [])),
-        "{{belangrijkste_arbeidsvoorwaarden}}": bullets(get_nested_v12(data, "voorwaarden.belangrijkste_arbeidsvoorwaarden", [])),
-        "{{geslacht_man}}": get_nested_v12(data, "doelgroepanalyse.geslacht.man"),
-        "{{geslacht_vrouw}}": get_nested_v12(data, "doelgroepanalyse.geslacht.vrouw"),
-        "{{leeftijdsverdeling}}": bullets(get_nested_v12(data, "doelgroepanalyse.leeftijdsverdeling", [])),
-        "{{afspraken_1}}": afspraken[0] if len(afspraken) > 0 else "",
-        "{{afspraken_2}}": afspraken[1] if len(afspraken) > 1 else "",
-        "{{afspraken_3}}": afspraken[2] if len(afspraken) > 2 else "",
-    }
-    for slide in prs.slides:
-        for shape in list(slide.shapes):
-            render_shape_v15(slide, shape, data, replacements)
-        for shape in slide.shapes:
-            clear_unreplaced_placeholders(shape)
-    apply_static_template_styles(prs)
-    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-        prs.save(tmp.name)
-        return Path(tmp.name).read_bytes()
-
-
-
-
-# =========================
-# v2.2 OVERRIDES
-# =========================
-# Doel van v2.2:
-# 1. Doelgroeponderzoek strikt scheiden van vacature/klantcontext.
-# 2. Pullfactoren uitsluitend doelgroepgedreven, zonder werkgever/vacaturetaal.
-# 3. PowerPoint-template leidend: alleen placeholders vullen, zo min mogelijk styling overschrijven.
-
-ALLOWED_PULLFACTORS = [
-    "Professionele ontwikkeling",
-    "Werk-privébalans",
-    "Autonomie",
-    "Inhoudelijke uitdaging",
-    "Doorgroeimogelijkheden",
-    "Erkenning van expertise",
-    "Flexibiliteit",
-    "Strategische invloed",
-    "Maatschappelijke relevantie",
-]
-
-PULLFACTOR_CONTEXT_FORBIDDEN = [
-    r"cosun", r"beet", r"company", r"klant", r"bedrijf", r"organisatie",
-    r"locatie", r"op locatie", r"binnen het bedrijf", r"veiligheid op de locatie",
-    r"investering", r"investeringen", r"organisatie in beweging", r"transitie",
-    r"zichtbare rol", r"directe impact", r"concrete verbetering", r"veiligheidscultuur",
-    r"seveso", r"atex", r"arie", r"iso\s*45001", r"wetgeving", r"procesinstallatie",
-    r"training", r"incident", r"stakeholder", r"maintenance", r"engineering",
-    r"arbeidsmarkt", r"baankans", r"baankansen", r"tekort", r"schaarste", r"krapte",
-    r"veel vacatures", r"personeelstekort", r"hoge vraag",
-    r"salaris", r"pensioen", r"vakantiedag", r"lease", r"eindejaarsuitkering",
-]
-
-
-def public_occupation_query(facts: Dict[str, Any]) -> str:
-    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
-    title = str(facts.get("vacaturenaam", "")).strip()
-    t = title.lower()
-    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
-        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
-    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
-        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
-    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
-        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
-    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
-        return "business analisten en informatieanalisten in Nederland"
-    if title:
-        return title
-    return "ervaren professionals in Nederland"
-
-
-def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
-    doelgroep = public_occupation_query(facts)
-    retry = "" if not strict_retry else """
-HERHAALCONTROLE:
-- De vorige output leek op vacature-/werkgevercontext of arbeidsmarktkrapte.
-- Gebruik uitsluitend de toegestane pullfactoren hieronder.
-- Kies de beste 3 op basis van extern onderzoek.
-"""
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar deze Nederlandse beroepsdoelgroep:
-Doelgroep: {doelgroep}
-Land: Nederland
-
-Onderzoeksvraag:
-Welke 3 factoren brengen deze beroepsdoelgroep in beweging om een andere baan te overwegen, en welke elementen willen zij daarom graag terugzien in een vacature?
-
-BRONSCHEIDING:
-- Gebruik verplicht web_search.
-- Gebruik alleen externe kandidaat-, werknemer-, branche- en arbeidsmarktonderzoeken.
-- Gebruik GEEN vacaturetekst, intake, klantnaam, werkgever, taken, projecten, wetgeving, bedrijfscultuur of USP's van één organisatie.
-- Gebruik de doelgroepomschrijving alleen om de juiste beroepsgroep te vinden.
-
-Kies uitsluitend uit deze toegestane pullfactoren, tenzij een externe bron een aantoonbaar betere algemene categorie noemt:
-{json.dumps(ALLOWED_PULLFACTORS, ensure_ascii=False)}
-
-Niet toegestaan:
-- arbeidsmarktkansen, tekorten, schaarste of hoge vraag;
-- concrete arbeidsvoorwaarden zoals salaris, pensioen, vakantiedagen of leaseauto;
-- klant-/werkgevercontext, organisatiefase, locatiecontext, rolcontext of vacature-inhoud;
-- woorden als: zichtbare rol, concrete verbeteringen, investering(en), organisatie in beweging, veiligheidscultuur, Seveso, ATEX, ARIE.
-
-Outputregels:
-- Precies 3 pullfactoren.
-- Elk item is één kort, natuurlijk label van 2-5 woorden.
-- Geen bedrijfsnaam, geen klantnaam, geen vacaturecontext.
-- Voeg bronnen/domeinen toe.
-{retry}
-Geef uitsluitend JSON:
-{{
-  "pullfactoren": ["", "", ""],
-  "bronnen": [],
-  "toelichting": ""
-}}
-""".strip()
-
-
-def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
-    cleaned = clean_list(items)
-    if len(cleaned) != 3:
-        return True
-    if pullfactors_contain_company(cleaned, company):
-        return True
-    for item in cleaned:
-        low = item.lower()
-        if any(re.search(pattern, low) for pattern in PULLFACTOR_CONTEXT_FORBIDDEN):
-            return True
-        if len(item.split()) > 7:
-            return True
-    return False
-
-
-def normalize_pullfactor_label(text: str) -> str:
-    text = re.sub(r"\s+", " ", str(text or "").strip(" •-\n\t.,;:"))
-    if not text:
-        return ""
-    low = text.lower()
-    mapping = {
-        "ontwikkeling": "Professionele ontwikkeling",
-        "professionele groei": "Professionele ontwikkeling",
-        "leren en ontwikkelen": "Professionele ontwikkeling",
-        "work-life balance": "Werk-privébalans",
-        "werk prive balans": "Werk-privébalans",
-        "werk-privé balans": "Werk-privébalans",
-        "autonomie": "Autonomie",
-        "vrijheid": "Autonomie",
-        "inhoudelijke uitdaging": "Inhoudelijke uitdaging",
-        "uitdaging": "Inhoudelijke uitdaging",
-        "doorgroei": "Doorgroeimogelijkheden",
-        "doorgroeimogelijkheden": "Doorgroeimogelijkheden",
-        "erkenning": "Erkenning van expertise",
-        "erkenning van expertise": "Erkenning van expertise",
-        "flexibiliteit": "Flexibiliteit",
-        "strategische invloed": "Strategische invloed",
-        "maatschappelijke relevantie": "Maatschappelijke relevantie",
-    }
-    if low in mapping:
-        return mapping[low]
-    # Corrigeer lange/contextuele outputs naar algemene categorieën.
-    if any(w in low for w in ["ontwikkel", "opleiding", "groei", "leer"]):
-        return "Professionele ontwikkeling"
-    if any(w in low for w in ["werk-priv", "privé", "work-life", "balans"]):
-        return "Werk-privébalans"
-    if any(w in low for w in ["autonomie", "vrijheid", "eigenaarschap", "zelfstandigheid"]):
-        return "Autonomie"
-    if any(w in low for w in ["inhoud", "complex", "uitdaging", "expertise"]):
-        return "Inhoudelijke uitdaging"
-    if any(w in low for w in ["doorgroei", "loopbaan", "carrière"]):
-        return "Doorgroeimogelijkheden"
-    if any(w in low for w in ["erkenning", "waardering", "vakmanschap"]):
-        return "Erkenning van expertise"
-    if any(w in low for w in ["flexibiliteit", "flexibel"]):
-        return "Flexibiliteit"
-    # Alleen korte, neutrale labels toelaten.
-    words = text.split()
-    if len(words) > 5 or any(re.search(p, low) for p in PULLFACTOR_CONTEXT_FORBIDDEN):
-        return ""
-    return text[:1].upper() + text[1:]
-
-
-def normalize_pullfactors(items: List[str]) -> List[str]:
-    out: List[str] = []
-    for item in clean_list(items):
-        item = normalize_pullfactor_label(item)
-        if item and item not in out:
-            out.append(item)
-    # Laat nooit vacature/context-doorlekken toe; vul alleen aan met neutrale doelgroepfactoren.
-    for fallback in ["Professionele ontwikkeling", "Werk-privébalans", "Autonomie", "Inhoudelijke uitdaging", "Doorgroeimogelijkheden"]:
-        if len(out) >= 3:
-            break
-        if fallback not in out:
-            out.append(fallback)
-    return out[:3]
-
-
-def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
-    doelgroep = public_occupation_query(facts)
-    return f"""
-Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe extern internetonderzoek naar deze doelgroep:
-Doelgroep: {doelgroep}
-Land: Nederland
-LinkedIn-doelgroepgrootte indien handmatig aangeleverd: {linkedin_size}
-
-Zoek online naar:
-1. passende functietitels en senioriteit;
-2. bedrijven waar deze doelgroep werkt;
-3. doelgroepgrootte als LinkedIn-veld ontbreekt.
-
-Harde regels:
-- Gebruik geen vacaturetekst, intake, klantnaam of werkgevercontext als bron voor doelgroepinformatie.
-- Concurrentenanalyse is altijd op bedrijfsniveau.
-- Geef echte bedrijfsnamen. Nooit Bedrijf A/B/C, Concurrent 1 of Organisatie X.
-- Doelgroepomschrijving moet specifiek zijn voor functiefamilie, domein, senioriteit en sector.
-- Pullfactoren en arbeidsvoorwaarden laat je leeg; die worden in aparte researchmodules onderzocht.
-
-Geef uitsluitend JSON terug:
-{{
-  "doelgroep_titel": "",
-  "doelgroep_omschrijving": "",
-  "verwachte_doelgroepgrootte": "",
-  "belangrijkste_functietitels": [],
-  "concurrenten_bedrijven": [],
-  "zoekrichting": [],
-  "pullfactoren": [],
-  "belangrijkste_arbeidsvoorwaarden": [],
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": [],
-  "research_bronnen": [],
-  "research_toelichting": ""
-}}
-""".strip()
-
-
-def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
-    doelgroep = public_occupation_query(facts)
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar deze Nederlandse doelgroep:
-Doelgroep: {doelgroep}
-Land: Nederland
-
-Onderzoek uitsluitend deze vraag:
-Welke 3 arbeidsvoorwaarden vinden mensen in deze beroepsgroep in het algemeen belangrijk wanneer zij ergens in dienst zijn?
-
-Regels:
-- Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals werknemersenquêtes, brancheonderzoeken, CNV/FNV/Randstad/Indeed/Nationale Vacaturebank/sectoronderzoek.
-- Gebruik geen vacaturetekst, intake, werkgever of vacaturepagina als bron.
-- Geef generieke categorieën, niet de concrete invulling van één werkgever.
-- Voorbeelden: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Flexibele werktijden, Mobiliteit, Ontwikkelmogelijkheden, Eindejaarsuitkering.
-- Geen bedragen, percentages, aantallen dagen, uren of concrete werkgeversvoorwaarden.
-- Eén onderwerp per item.
-
-Geef uitsluitend JSON:
-{{
-  "belangrijkste_arbeidsvoorwaarden": ["", "", ""],
-  "bronnen": [],
-  "toelichting": ""
-}}
-""".strip()
-
-
-def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
-    doelgroep = public_occupation_query(facts)
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de demografie van deze Nederlandse beroepsdoelgroep:
-Doelgroep: {doelgroep}
-Land: Nederland
-
-Onderzoek:
-1. man-vrouwverhouding binnen deze beroepsgroep of dichtstbijzijnde officiële functiefamilie;
-2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie.
-
-Bronhiërarchie:
-1. CBS / StatLine of andere officiële Nederlandse statistiek;
-2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
-3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
-
-Regels:
-- Gebruik geen vacaturetekst, intake of werkgevercontext.
-- Baseer man-vrouw en leeftijd op dezelfde beroepsafbakening waar mogelijk.
-- Rond af op hele procenten.
-- Gebruik altijd deze categorieën: 15-24, 25-34, 35-49, 50+.
-
-Geef uitsluitend JSON:
-{{
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
-  "bronnen": [],
-  "afbakening": "",
-  "toelichting": ""
-}}
-""".strip()
-
-
-
-# -----------------------------------------------------------------------------
-# v2.3: juiste Cooble-template is leidend. Alleen placeholders worden ingevuld.
-# Geen lettergrootte, positie, marges, regelafstand of static layout aanpassen.
-# -----------------------------------------------------------------------------
-
-def _pct_int(value: Any):
-    m = re.search(r"(\d{1,3})(?:[.,]\d+)?\s*%?", str(value or ""))
-    if not m:
-        return None
-    return max(0, min(100, int(round(float(m.group(1))))))
-
-
-def _round_to_5(value: int) -> int:
-    return max(0, min(100, int(round(value / 5.0) * 5)))
-
-
-def _normalize_gender_web(gender: Dict[str, Any]) -> Dict[str, str]:
-    """Normaliseer webresearch naar stabiele afgeronde percentages; verzin geen benchmark."""
-    man = _pct_int((gender or {}).get("man", ""))
-    vrouw = _pct_int((gender or {}).get("vrouw", ""))
-    if man is None and vrouw is None:
-        return {"man": "", "vrouw": ""}
-    if man is None:
-        man = 100 - vrouw
-    if vrouw is None:
-        vrouw = 100 - man
-    # Kleine bron-/afrondingsverschillen worden gestabiliseerd naar stappen van 5%.
-    man = _round_to_5(man)
-    vrouw = 100 - man
-    return {"man": f"{man}%", "vrouw": f"{vrouw}%"}
-
-
-def _normalize_age_web(items: List[str]) -> List[str]:
-    wanted = ["15-24", "25-34", "35-49", "50+"]
-    parsed: Dict[str, int] = {}
-    for raw in clean_list(items):
-        compact = str(raw).replace(" ", "")
-        pct = _pct_int(raw)
-        if pct is None:
-            continue
-        for label in wanted:
-            if label in compact:
-                parsed[label] = pct
-                break
-    if len(parsed) != 4:
-        return []
-    rounded = {k: _round_to_5(v) for k, v in parsed.items()}
-    diff = 100 - sum(rounded.values())
-    # Corrigeer alleen het afrondingsverschil op de grootste categorie.
-    largest = max(rounded, key=rounded.get)
-    rounded[largest] = max(0, rounded[largest] + diff)
-    return [f"{k}: {rounded[k]}%" for k in wanted]
-
-
-def build_demographics_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
-    doelgroep = public_occupation_query(facts)
-    retry = "" if not strict_retry else """
-DIT IS EEN HERHAALPOGING OMDAT DE EERSTE DATA ONVOLLEDIG WAS.
-Je MOET vier leeftijdspercentages en een man/vrouwverdeling teruggeven.
-Gebruik desnoods één niveau bredere officiële beroepsklasse, maar blijf bij dezelfde afbakening voor beide analyses.
-"""
-    return f"""
-Je bent een arbeidsmarktonderzoeker. Doe ACTUEEL WEBONDERZOEK naar uitsluitend de DEMOGRAFIE van deze Nederlandse beroepsdoelgroep:
-Doelgroep: {doelgroep}
-Land: Nederland
-
-BELANGRIJK:
-- Je krijgt bewust GEEN werkgever, vacaturetekst, intake, bedrijfsnaam of concrete vacaturecontext.
-- Gebruik die informatie dus ook niet in je onderzoek.
-- Onderzoek de beroepsgroep/functiefamilie als geheel.
-
-Zoek twee dingen:
-1. man-vrouwverhouding;
-2. leeftijdsverdeling.
-
-VASTE BRONVOLGORDE:
-1. CBS / StatLine;
-2. UWV, ROA, SBB of een officiële branche-/beroepsorganisatie;
-3. pas daarna een gerenommeerde Nederlandse arbeidsmarktbron.
-
-CONSISTENTIEREGELS:
-- Gebruik voor man/vrouw en leeftijd dezelfde beroepsafbakening waar mogelijk.
-- Als exacte functiedata niet bestaan, kies één aantoonbaar dichtstbijzijnde officiële beroepsklasse en gebruik die consequent.
-- Gebruik de meest recente Nederlandse cijfers die je kunt vinden.
-- Maak geen vrije AI-schatting.
-- Man + vrouw = exact 100%.
-- Leeftijd = exact deze vier categorieën en samen 100%: 15-24, 25-34, 35-49, 50+.
-- Rond de gevonden cijfers af op hele procenten; de applicatie normaliseert daarna voor presentatiestabiliteit.
-- Geef minimaal één concrete bron/domein op.
-{retry}
-
-Geef uitsluitend JSON:
-{{
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": ["15-24: 0%", "25-34: 0%", "35-49: 0%", "50+: 0%"],
-  "bronnen": [],
-  "afbakening": "",
-  "toelichting": ""
-}}
-""".strip()
-
-
-def deterministic_demographics(facts: Dict[str, Any], research: Dict[str, Any]) -> Dict[str, Any]:
-    """v2.3: uitsluitend webdata; geen zelfverzonnen vaste functietabellen."""
-    gender = _normalize_gender_web((research or {}).get("geslacht", {}))
-    age = _normalize_age_web((research or {}).get("leeftijdsverdeling", []))
-    if not gender.get("man") or not gender.get("vrouw") or len(age) != 4:
-        retry = call_openai_json(build_demographics_research_prompt(facts, strict_retry=True), use_web=True)
-        gender = _normalize_gender_web(retry.get("geslacht", {}))
-        age = _normalize_age_web(retry.get("leeftijdsverdeling", []))
-    if not gender.get("man") or not gender.get("vrouw") or len(age) != 4:
-        raise RuntimeError(
-            "Demografisch webonderzoek leverde geen complete man/vrouw- en leeftijdsverdeling op. "
-            "De tool stopt bewust in plaats van percentages te verzinnen."
-        )
-    return {
-        "geslacht": gender,
-        "leeftijdsverdeling": age,
-        "afbakening": (research or {}).get("demografie_afbakening", "")
-    }
-
 
 def _strip_target_size(value: Any) -> str:
     text = str(value or "").strip()
@@ -3006,7 +2293,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
 
     # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
     data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.2: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> fixed editable agreements"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.4: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
     return ensure_core_keys(data)
 
 
@@ -3105,7 +2392,7 @@ if st.session_state.data:
         c3, c4 = st.columns(2)
         g["man"] = c3.text_input("Geslacht man", g.get("man", ""))
         g["vrouw"] = c4.text_input("Geslacht vrouw", g.get("vrouw", ""))
-        d["leeftijdsverdeling"] = editable_list("Leeftijdsverdeling", d.get("leeftijdsverdeling", []), "age", 5)
+        d["leeftijdsverdeling"] = editable_list("Leeftijdsverdeling", d.get("leeftijdsverdeling", []), "age", 4, hard_max=True)
 
     with tabs[3]:
         s = data.setdefault("sourcingplan", {})

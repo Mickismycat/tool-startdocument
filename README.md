@@ -1,15 +1,11 @@
-# Startdocument Generator v2.4.2
+# Startdocument Generator v2.4.4
 
-Wijzigingen:
-- Pullfactoren komen via verplichte webresearch en mogen alleen uit een gesloten lijst met algemene overstapmotieven worden gekozen.
-- Geen vacature-, klant- of sectorspecifieke formuleringen meer in pullfactoren.
-- Afspraken krijgen standaard de drie voorbeeldteksten met `XX` uit het Cooble-template en zijn in de preview bewerkbaar.
-- Bestaande PowerPoint-template-first export blijft behouden.
+Wijzigingen in deze versie:
 
-## Deploy
-Upload alle bestanden en mappen naar dezelfde GitHub-repository en commit. Streamlit redeployt daarna automatisch.
+- Eisen en voorkeuren worden compacter gemaakt voor de kandidaat-slide.
+- Afspraken zijn grotere tekstvelden in de preview, zodat de volledige tekst zichtbaar en bewerkbaar is.
+- Man/vrouw en leeftijd zijn gestabiliseerd per functiefamilie, zodat dezelfde doelgroep niet per run sterk wisselt.
+- Webresearch blijft onderdeel van de pipeline, maar de presentatie gebruikt een genormaliseerde benchmark voor demografie.
+- Cooble-template-first export blijft behouden.
 
-
-## v2.4.3
-- Fix: valideert genormaliseerde pullfactorlabels in plaats van vrije webformuleringen.
-- Webresearch blijft verplicht; natuurlijke varianten worden naar de gesloten pullfactorlijst vertaald.
+Upload alle bestanden en mappen naar GitHub, inclusief `templates/`.
