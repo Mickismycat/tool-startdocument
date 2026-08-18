@@ -1,10 +1,9 @@
-# Startdocument Generator v2.4.5
+# Startdocument Generator v2.4.6
 
-Bugfix release voor v2.4.4.
-
-- Herstelt ontbrekende `build_target_market_research_prompt`.
-- Herstelt tevens de gekoppelde doelgroepfuncties voor demografie en research-merge.
-- Behoudt compacte eisen/voorkeuren en grotere afsprakenvelden.
-- Behoudt verplichte webresearch voor doelgroep, pullfactoren, arbeidsvoorwaarden en demografie.
-
-Upload de volledige inhoud van deze map naar dezelfde GitHub repository.
+Wijzigingen:
+- Salaris uit de vacaturetekst is altijd leidend; intake is alleen fallback.
+- Taken worden niet meer op komma, slash of `en` opgeknipt.
+- Combinaties zoals `Seveso, ATEX en ISO 45001` blijven intact.
+- Takenprompt selecteert drie complete kernverantwoordelijkheden.
+- Arbeidsvoorwaarden blijven extern onderzocht en worden genormaliseerd naar duidelijke categorieën.
+- Bestaande Cooble-template en template-first PowerPoint-export blijven behouden.

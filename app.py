@@ -46,7 +46,12 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     for fk in ["klantnaam", "vacaturenaam", "salaris"]:
         if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
             facts[fk] = fallback[fk]
-    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+    # Vacaturetekst is altijd leidend voor salaris. Intake alleen als vacature geen salaris bevat.
+    preferred_salary = extract_salary_prefer_vacancy(vacature, intake)
+    if preferred_salary:
+        facts["salaris"] = preferred_salary
+    else:
+        facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
 
     extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
     if extracted_no_go:
@@ -276,10 +281,11 @@ def normalize_condition_label(text: str) -> str:
         (("pensioen",), "Pensioenregeling"),
         (("vakantie", "verlof", "adv", "vrije dagen"), "Vakantiedagen"),
         (("hybride", "thuiswerk", "remote", "flexibel werken"), "Hybride werken"),
-        (("opleiding", "training", "ontwikkeling", "studiebudget", "leerbudget"), "Ontwikkelmogelijkheden"),
+        (("opleiding", "training", "ontwikkeling", "doorgroei", "carrière", "studiebudget", "leerbudget"), "Ontwikkelmogelijkheden"),
         (("mobiliteit", "leaseauto", "auto van de zaak", "reiskosten", "ov-vergoeding", "fietsregeling"), "Mobiliteit"),
         (("bonus", "variabele beloning"), "Bonusregeling"),
         (("eindejaarsuitkering", "13e maand", "dertiende maand"), "Eindejaarsuitkering"),
+        (("werk-privé", "work-life", "werk privé", "balans tussen werk", "worklife"), "Werk-privébalans"),
         (("werktijd", "werkweek", "uren", "rooster"), "Flexibele werktijden"),
         (("vitaliteit", "fitness", "gezondheid"), "Vitaliteitsregeling"),
     ]
@@ -358,6 +364,30 @@ def normalize_salary_display(value: str) -> str:
     cleaned = re.sub(r"[^0-9.,/\-– ]", "", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–.,")
     return cleaned
+
+
+def extract_salary_prefer_vacancy(vacature_text: str, intake_text: str = "") -> str:
+    """Salaris uit vacaturetekst is leidend; intake wordt alleen gebruikt als vacature niets bevat."""
+    def extract_from(text: str) -> str:
+        text = str(text or "")
+        if not text.strip():
+            return ""
+        # Eerst expliciete salarisregels / euro-ranges.
+        patterns = [
+            r"(?im)^\s*(?:salaris|salarisrange|salarisindicatie)\s*[:\-]?\s*([^\n]{2,120})$",
+            r"(?i)€\s*([0-9]{1,3}(?:[. ]?[0-9]{3})|[0-9]{4,6})\s*(?:-|–|tot)\s*€?\s*([0-9]{1,3}(?:[. ]?[0-9]{3})|[0-9]{4,6})",
+            r"(?i)\b(schaal\s*[0-9]+(?:\s*/\s*[0-9]+)*)\b",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text)
+            if not m:
+                continue
+            if len(m.groups()) >= 2 and m.group(2):
+                return normalize_salary_display(f"{m.group(1)} - {m.group(2)}")
+            return normalize_salary_display(m.group(1))
+        return ""
+
+    return extract_from(vacature_text) or extract_from(intake_text)
 
 
 def normalize_age_distribution(items: List[str]) -> List[str]:
@@ -484,10 +514,15 @@ def limit_words(text: str, max_words: int = 28) -> str:
 
 
 def presentation_bullets(items: List[str], max_items: int = 3) -> List[str]:
-    """Presentation layer: exact maximaal 3 bullets, één onderwerp per bullet."""
+    """Presentation layer: maximaal 3 bullets zonder inhoud op leestekens op te knippen.
+
+    Belangrijk: komma's, schuine strepen en 'en' kunnen onderdeel zijn van één inhoudelijk begrip
+    (bijv. 'Seveso, ATEX en ISO 45001'). De AI selecteert de drie onderwerpen; Python splitst
+    die onderwerpen niet opnieuw.
+    """
     out: List[str] = []
-    for item in split_one_topic_per_bullet(items):
-        item = re.sub(r"\s+", " ", str(item).strip(" •-\n\t"))
+    for raw in clean_list(items):
+        item = re.sub(r"\s+", " ", str(raw).strip(" •-\n\t"))
         if not item:
             continue
         item = limit_words(item, 22)
@@ -1285,7 +1320,9 @@ Niet interpreteren, niet mooier maken, niet aanvullen.
 Regels:
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
-- Neem salaris/schalen concreet over als ze genoemd worden.
+- Salaris uit de VACATURETEKST is leidend. Gebruik salaris uit intake alleen als de vacaturetekst geen salaris of schaal bevat.
+- Taken_feiten: behoud inhoudelijke combinaties met komma's intact. "Seveso, ATEX en ISO 45001" is één inhoudelijk onderwerp en mag niet door komma's worden opgeknipt.
+- Taken_feiten: haal de kernhandeling + het concrete domein/object uit de tekst. Geen halve zinsdelen.
 - Neem alle no-go/check-eerst organisaties uit de intake over als losse bedrijfsnamen.
 - Als een veld ontbreekt, gebruik een lege string of lege lijst.
 
@@ -1379,7 +1416,8 @@ Strenge schrijfrichtlijnen:
 - Extra opmerkingen zijn leidend boven alles.
 - Gebruik de feitenextractie en research als bron; schrijf niet opnieuw generiek vanuit de vacature.
 - Intake_samenvatting: 80-110 woorden als één mooie lopende tekst. Geen bullets, geen opsomming. Deze dia moet zelfstandig duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
-- Taken: precies 3 bullets, concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
+- Taken: precies 3 complete bullets, concreet voor deze rol. Iedere bullet bevat één kernhandeling plus het inhoudelijke object/domein. Splits NOOIT op komma's binnen één begrip of opsomming; "Seveso, ATEX en ISO 45001" blijft samen in één bullet. Vermijd losse fragmenten.
+- Taken: selecteer de drie belangrijkste verantwoordelijkheden uit taken_feiten; herschrijf compact maar behoud betekenis.
 - Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
 - Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
@@ -2344,7 +2382,12 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     for fk in ["klantnaam", "vacaturenaam", "salaris"]:
         if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
             facts[fk] = fallback[fk]
-    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+    # Vacaturetekst is altijd leidend voor salaris. Intake alleen als vacature geen salaris bevat.
+    preferred_salary = extract_salary_prefer_vacancy(vacature, intake)
+    if preferred_salary:
+        facts["salaris"] = preferred_salary
+    else:
+        facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
 
     extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
     if extracted_no_go:
@@ -2400,11 +2443,12 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     stable_demo = deterministic_demographics(facts, research)
     data.setdefault("doelgroepanalyse", {})["geslacht"] = stable_demo.get("geslacht", {"man": "", "vrouw": ""})
     data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = stable_demo.get("leeftijdsverdeling", normalize_age_distribution(research.get("leeftijdsverdeling", [])))
-    data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
+    final_salary = extract_salary_prefer_vacancy(vacature, intake)
+    data.setdefault("basisgegevens", {})["salaris"] = final_salary or normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
 
     # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
     data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.4: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.6: vacancy-leading salary -> intact task extraction -> external market/conditions/pull/demographics -> writer -> template-first export"
     return ensure_core_keys(data)
 
 
