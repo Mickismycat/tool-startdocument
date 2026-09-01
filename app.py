@@ -2176,6 +2176,21 @@ def ensure_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def public_occupation_query(facts: Dict[str, Any]) -> str:
+    """Maak een korte, werkgever-neutrale zoekterm voor extern doelgroeponderzoek.
+
+    Alleen de beroeps-/functietitel wordt gebruikt. Klantnaam, intake, vacature-USP's,
+    taken, locatie en arbeidsvoorwaarden worden bewust niet meegenomen.
+    """
+    title = str(facts.get("vacaturenaam", "") or "").strip()
+    title = re.sub(r"\s+", " ", title).strip(" -–—|,.;:")
+    if not title:
+        title = str(facts.get("doelgroep_titel", "") or "professionals").strip()
+    # Alleen herkenbare vacature-labels verwijderen; inhoudelijke beroepstermen zoals HVK blijven staan.
+    title = re.sub(r"^(vacature|functie)\s*[:\-]\s*", "", title, flags=re.I)
+    return f"{title} in Nederland"
+
+
 def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
     doelgroep = public_occupation_query(facts)
     retry = "" if not strict_retry else """
