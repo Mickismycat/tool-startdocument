@@ -2283,6 +2283,111 @@ def pullfactors_are_invalid(items: List[str], company: str = "") -> bool:
     return len(set(cleaned)) != 3
 
 
+
+
+def _occupation_research_context(facts: Dict[str, Any]) -> Dict[str, str]:
+    """Maak een minimale, werkgever-neutrale context voor extern doelgroep onderzoek."""
+    title = str(facts.get("vacaturenaam", "") or "").strip()
+    # Klantnaam, vacature-USP's, interne nuances en concrete arbeidsvoorwaarden worden bewust niet doorgegeven.
+    return {
+        "functietitel": title,
+        "locatie": str(facts.get("locatie", "Nederland") or "Nederland").strip(),
+    }
+
+
+def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
+    ctx = _occupation_research_context(facts)
+    return f"""
+Je bent arbeidsmarktonderzoeker voor de Nederlandse recruitmentmarkt.
+Voer VERPLICHT online onderzoek uit naar de BEROEPSGROEP rond onderstaande functietitel.
+
+Doel: bepaal wie de relevante doelgroep is en bij welke werkgevers vergelijkbare professionals werken.
+
+Strikte regels:
+- Gebruik uitsluitend de functietitel/beroepsgroep en eventueel de geografische markt als onderzoekscontext.
+- Gebruik GEEN werkgever, vacaturetekst, intake, vacature-USP's, interne organisatiecontext of arbeidsvoorwaarden als bron of context.
+- Beschrijf de doelgroep beroepsmatig en specifiek: functiefamilie, specialisme, senioriteit, sectoren en gangbare alternatieve functietitels.
+- Concurrenten zijn echte BEDRIJVEN/ORGANISATIES waar deze beroepsgroep aantoonbaar werkt; geef geen placeholders.
+- Als LinkedIn-doelgroepgrootte is ingevuld, neem die exact over. Anders geef een conservatieve afgeronde indicatie op basis van online bronnen en benoem dat als schatting.
+- Vermijd werkgever-specifieke termen in doelgroepomschrijving, functietitels en zoekrichting.
+
+Onderzoekscontext:
+Functietitel: {ctx['functietitel']}
+Geografische markt: Nederland
+Doelgroepgrootte gevonden op LinkedIn: {linkedin_size or 'niet ingevuld'}
+
+Geef uitsluitend JSON:
+{{
+  "doelgroep_titel": "",
+  "doelgroep_omschrijving": "",
+  "verwachte_doelgroepgrootte": "",
+  "belangrijkste_functietitels": [],
+  "concurrenten_bedrijven": [],
+  "zoekrichting": [],
+  "research_toelichting": "",
+  "bronnen": []
+}}
+""".strip()
+
+
+def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
+    ctx = _occupation_research_context(facts)
+    return f"""
+Je bent arbeidsmarktonderzoeker. Voer VERPLICHT online onderzoek uit naar de demografische samenstelling van de Nederlandse BEROEPSGROEP rond onderstaande functietitel.
+
+Onderzoekscontext:
+Functietitel: {ctx['functietitel']}
+Land: Nederland
+
+Strikte regels:
+- Gebruik GEEN werkgever, vacaturetekst, intake, vacature-USP's of interne organisatiecontext.
+- Zoek eerst naar zo direct mogelijke beroepsgroepdata. Geef voorkeur aan CBS, UWV, ROA, O*NET/ESCO-achtige beroepsindelingen met Nederlandse data, branche-/beroepsverenigingen en betrouwbare arbeidsmarktplatforms.
+- Als er geen exacte functietiteldata bestaat, verbreed één stap naar de meest passende functiefamilie en leg dit kort uit in toelichting.
+- Baseer man/vrouw en leeftijd op dezelfde of inhoudelijk vergelijkbare beroepsafbakening.
+- Rond man/vrouw af op hele procenten die samen 100% vormen.
+- Gebruik vaste leeftijdscategorieën: 15-24, 25-34, 35-49, 50+; percentages moeten samen circa 100% zijn.
+- Geen vrije gok per run: gebruik gevonden broncijfers en een reproduceerbare afbakening.
+
+Geef uitsluitend JSON:
+{{
+  "geslacht": {{"man": "", "vrouw": ""}},
+  "leeftijdsverdeling": [
+    "15-24: %",
+    "25-34: %",
+    "35-49: %",
+    "50+: %"
+  ],
+  "demografie_toelichting": "",
+  "bronnen": []
+}}
+""".strip()
+
+
+def merge_research_parts(*parts: Dict[str, Any]) -> Dict[str, Any]:
+    """Voeg onafhankelijke researchresultaten samen zonder eerdere waarden stil te overschrijven."""
+    merged: Dict[str, Any] = {}
+    all_sources: List[Any] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        for key, value in part.items():
+            if key == "bronnen":
+                if isinstance(value, list):
+                    all_sources.extend(value)
+                elif value:
+                    all_sources.append(value)
+                continue
+            # Elke researchmodule beheert eigen velden; bij dubbeling wint de latere expliciete module.
+            if value not in (None, "", [], {}):
+                merged[key] = value
+    if all_sources:
+        seen = []
+        for src in all_sources:
+            if src not in seen:
+                seen.append(src)
+        merged["bronnen"] = seen
+    return merged
+
 def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str, extra: str, status=None) -> Dict[str, Any]:
     if status:
         status.write("Stap 1/8: feiten uit vacature en intake halen")
