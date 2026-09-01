@@ -46,12 +46,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     for fk in ["klantnaam", "vacaturenaam", "salaris"]:
         if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
             facts[fk] = fallback[fk]
-    # Vacaturetekst is altijd leidend voor salaris. Intake alleen als vacature geen salaris bevat.
-    preferred_salary = extract_salary_prefer_vacancy(vacature, intake)
-    if preferred_salary:
-        facts["salaris"] = preferred_salary
-    else:
-        facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
 
     extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
     if extracted_no_go:
@@ -269,46 +264,95 @@ def infer_competitors_offline(vacature_text: str, intake_text: str, current: Lis
     return result[:8]
 
 
-def normalize_condition_label(text: str) -> str:
-    """Normaliseer onderzoeksresultaten naar één generieke arbeidsvoorwaardencategorie.
+ALLOWED_EMPLOYMENT_CONDITIONS = [
+    "Salaris",
+    "Pensioenregeling",
+    "Vakantiedagen",
+    "ADV-dagen",
+    "Bonusregeling",
+    "Eindejaarsuitkering",
+    "13e maand",
+    "Leaseauto",
+    "Mobiliteitsbudget",
+    "Reiskostenvergoeding",
+    "Thuiswerkregeling",
+    "Thuiswerkvergoeding",
+    "Flexibele werktijden",
+    "Opleidingsbudget",
+    "Studiekostenregeling",
+    "Ploegentoeslag",
+    "Overwerkvergoeding",
+    "Onkostenvergoeding",
+    "Aandelenregeling",
+]
 
-    Concrete aantallen/bedragen uit werkgeversvacatures mogen nooit in de slide terechtkomen.
+
+def normalize_condition_label(text: str) -> str:
+    """Map webresearch uitsluitend naar echte primaire/secundaire arbeidsvoorwaarden.
+
+    Cultuur, inhoud, autonomie, ontwikkelkansen en andere pullfactoren worden bewust
+    niet toegelaten in dit veld.
     """
-    text = str(text or "").strip(" •-\n\t")
-    low = text.lower()
-    category_rules = [
-        (("salaris", "loon", "beloning", "pay", "salary"), "Salaris"),
+    text = str(text or "").strip(" •-\n\t.,;:")
+    low = re.sub(r"\s+", " ", text.lower()).strip()
+    if not low:
+        return ""
+
+    # Expliciet blokkeren: dit zijn geen primaire/secundaire arbeidsvoorwaarden.
+    blocked = (
+        "werksfeer", "cultuur", "autonomie", "impact", "inhoud",
+        "uitdaging", "doorgroei", "groeimogelijk", "ontwikkelmogelijk",
+        "professionele ontwikkeling", "werkzekerheid", "baanzekerheid",
+        "maatschappelijke relevantie", "verantwoordelijkheid", "team",
+        "leidinggevende", "zingeving", "erkenning", "carriere", "carrière"
+    )
+    if any(term in low for term in blocked):
+        return ""
+
+    rules = [
+        (("salaris", "loon", "basissalaris", "beloning", "salary", "pay"), "Salaris"),
         (("pensioen",), "Pensioenregeling"),
-        (("vakantie", "verlof", "adv", "vrije dagen"), "Vakantiedagen"),
-        (("hybride", "thuiswerk", "remote", "flexibel werken"), "Hybride werken"),
-        (("opleiding", "training", "ontwikkeling", "doorgroei", "carrière", "studiebudget", "leerbudget"), "Ontwikkelmogelijkheden"),
-        (("mobiliteit", "leaseauto", "auto van de zaak", "reiskosten", "ov-vergoeding", "fietsregeling"), "Mobiliteit"),
-        (("bonus", "variabele beloning"), "Bonusregeling"),
-        (("eindejaarsuitkering", "13e maand", "dertiende maand"), "Eindejaarsuitkering"),
-        (("werk-privé", "work-life", "werk privé", "balans tussen werk", "worklife"), "Werk-privébalans"),
-        (("werktijd", "werkweek", "uren", "rooster"), "Flexibele werktijden"),
-        (("vitaliteit", "fitness", "gezondheid"), "Vitaliteitsregeling"),
+        (("adv", "atv"), "ADV-dagen"),
+        (("vakantie", "vakantiedag", "verlofdagen", "vrije dagen"), "Vakantiedagen"),
+        (("bonus", "variabele beloning", "prestatiebeloning"), "Bonusregeling"),
+        (("eindejaarsuitkering", "eindejaarsbonus"), "Eindejaarsuitkering"),
+        (("13e maand", "dertiende maand"), "13e maand"),
+        (("leaseauto", "auto van de zaak", "bedrijfsauto"), "Leaseauto"),
+        (("mobiliteitsbudget",), "Mobiliteitsbudget"),
+        (("reiskosten", "kilometervergoeding", "ov-vergoeding"), "Reiskostenvergoeding"),
+        (("thuiswerkregeling", "hybride werken", "thuiswerken", "remote werken"), "Thuiswerkregeling"),
+        (("thuiswerkvergoeding",), "Thuiswerkvergoeding"),
+        (("flexibele werktijden", "flextijden", "flexibele uren"), "Flexibele werktijden"),
+        (("opleidingsbudget", "persoonlijk opleidingsbudget", "trainingsbudget"), "Opleidingsbudget"),
+        (("studiekosten", "studiekostenregeling", "studievergoeding"), "Studiekostenregeling"),
+        (("ploegentoeslag", "onregelmatigheidstoeslag"), "Ploegentoeslag"),
+        (("overwerkvergoeding", "overwerktoeslag"), "Overwerkvergoeding"),
+        (("onkostenvergoeding",), "Onkostenvergoeding"),
+        (("aandelenregeling", "aandelenplan", "stock options"), "Aandelenregeling"),
     ]
-    for needles, label in category_rules:
+    for needles, label in rules:
         if any(n in low for n in needles):
             return label
-    # Geen cijfers/percentages/bedragen toelaten in resterende labels.
-    text = re.sub(r"€?\s*\d[\d\.,%/-]*", "", text)
-    text = re.sub(r"\s+", " ", text).strip(" ,;-:")
-    # Houd labels kort; concrete zinnen zijn niet gewenst.
-    if len(text.split()) > 4:
-        text = " ".join(text.split()[:4])
-    return text[:1].upper() + text[1:] if text else text
+
+    # Alleen labels die letterlijk op de whitelist staan mogen door.
+    for allowed in ALLOWED_EMPLOYMENT_CONDITIONS:
+        if low == allowed.lower():
+            return allowed
+    return ""
 
 
 def normalize_conditions(items: List[str]) -> List[str]:
     out: List[str] = []
-    for item in split_one_topic_per_bullet(items):
-        item = normalize_condition_label(item)
-        if item and item not in out:
-            out.append(item)
+    for item in clean_list(items or []):
+        label = normalize_condition_label(item)
+        if label and label not in out:
+            out.append(label)
     return out[:3]
 
+
+def employment_conditions_are_invalid(items: List[str]) -> bool:
+    cleaned = normalize_conditions(items)
+    return len(cleaned) != 3 or any(item not in ALLOWED_EMPLOYMENT_CONDITIONS for item in cleaned)
 
 def normalize_pullfactor_label(text: str) -> str:
     """Maak pullfactoren compact, natuurlijk en presentatiewaardig zonder losse/rare fragmenten."""
@@ -364,30 +408,6 @@ def normalize_salary_display(value: str) -> str:
     cleaned = re.sub(r"[^0-9.,/\-– ]", "", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–.,")
     return cleaned
-
-
-def extract_salary_prefer_vacancy(vacature_text: str, intake_text: str = "") -> str:
-    """Salaris uit vacaturetekst is leidend; intake wordt alleen gebruikt als vacature niets bevat."""
-    def extract_from(text: str) -> str:
-        text = str(text or "")
-        if not text.strip():
-            return ""
-        # Eerst expliciete salarisregels / euro-ranges.
-        patterns = [
-            r"(?im)^\s*(?:salaris|salarisrange|salarisindicatie)\s*[:\-]?\s*([^\n]{2,120})$",
-            r"(?i)€\s*([0-9]{1,3}(?:[. ]?[0-9]{3})|[0-9]{4,6})\s*(?:-|–|tot)\s*€?\s*([0-9]{1,3}(?:[. ]?[0-9]{3})|[0-9]{4,6})",
-            r"(?i)\b(schaal\s*[0-9]+(?:\s*/\s*[0-9]+)*)\b",
-        ]
-        for pat in patterns:
-            m = re.search(pat, text)
-            if not m:
-                continue
-            if len(m.groups()) >= 2 and m.group(2):
-                return normalize_salary_display(f"{m.group(1)} - {m.group(2)}")
-            return normalize_salary_display(m.group(1))
-        return ""
-
-    return extract_from(vacature_text) or extract_from(intake_text)
 
 
 def normalize_age_distribution(items: List[str]) -> List[str]:
@@ -514,15 +534,10 @@ def limit_words(text: str, max_words: int = 28) -> str:
 
 
 def presentation_bullets(items: List[str], max_items: int = 3) -> List[str]:
-    """Presentation layer: maximaal 3 bullets zonder inhoud op leestekens op te knippen.
-
-    Belangrijk: komma's, schuine strepen en 'en' kunnen onderdeel zijn van één inhoudelijk begrip
-    (bijv. 'Seveso, ATEX en ISO 45001'). De AI selecteert de drie onderwerpen; Python splitst
-    die onderwerpen niet opnieuw.
-    """
+    """Presentation layer: exact maximaal 3 bullets, één onderwerp per bullet."""
     out: List[str] = []
-    for raw in clean_list(items):
-        item = re.sub(r"\s+", " ", str(raw).strip(" •-\n\t"))
+    for item in split_one_topic_per_bullet(items):
+        item = re.sub(r"\s+", " ", str(item).strip(" •-\n\t"))
         if not item:
             continue
         item = limit_words(item, 22)
@@ -1320,9 +1335,7 @@ Niet interpreteren, niet mooier maken, niet aanvullen.
 Regels:
 - Intake is leidend boven vacaturetekst.
 - Extra opmerkingen zijn leidend boven alles.
-- Salaris uit de VACATURETEKST is leidend. Gebruik salaris uit intake alleen als de vacaturetekst geen salaris of schaal bevat.
-- Taken_feiten: behoud inhoudelijke combinaties met komma's intact. "Seveso, ATEX en ISO 45001" is één inhoudelijk onderwerp en mag niet door komma's worden opgeknipt.
-- Taken_feiten: haal de kernhandeling + het concrete domein/object uit de tekst. Geen halve zinsdelen.
+- Neem salaris/schalen concreet over als ze genoemd worden.
 - Neem alle no-go/check-eerst organisaties uit de intake over als losse bedrijfsnamen.
 - Als een veld ontbreekt, gebruik een lege string of lege lijst.
 
@@ -1416,8 +1429,7 @@ Strenge schrijfrichtlijnen:
 - Extra opmerkingen zijn leidend boven alles.
 - Gebruik de feitenextractie en research als bron; schrijf niet opnieuw generiek vanuit de vacature.
 - Intake_samenvatting: 80-110 woorden als één mooie lopende tekst. Geen bullets, geen opsomming. Deze dia moet zelfstandig duidelijk maken waar we naar zoeken, inclusief aanleiding, focus, nuances, nadruk uit intake en wat juist niet past.
-- Taken: precies 3 complete bullets, concreet voor deze rol. Iedere bullet bevat één kernhandeling plus het inhoudelijke object/domein. Splits NOOIT op komma's binnen één begrip of opsomming; "Seveso, ATEX en ISO 45001" blijft samen in één bullet. Vermijd losse fragmenten.
-- Taken: selecteer de drie belangrijkste verantwoordelijkheden uit taken_feiten; herschrijf compact maar behoud betekenis.
+- Taken: precies 3 bullets, concreet voor deze rol. Benoem domein, klanttype, projecttype of inhoudelijke context.
 - Eisen: precies 3 bullets. Nooit "relevante ervaring". Schrijf ervaring waarmee.
 - Doelgroep: specifiek voor deze functie, sector, senioriteit en domein.
 - Pullfactoren: extern en arbeidsmarktgericht, niet uit vacaturetekst.
@@ -1845,134 +1857,33 @@ Geef uitsluitend JSON terug:
 """.strip()
 
 
-def public_occupation_query(facts: Dict[str, Any]) -> str:
-    """Publieke doelgroepomschrijving voor extern onderzoek, zonder klant-, vacature- of intakecontext."""
-    title = str(facts.get("vacaturenaam", "")).strip()
-    t = title.lower()
-    if re.search(r"\b(hvk|hogere veiligheidskundige|veiligheidssystemen|hse|qhse|safety)\b", t):
-        return "Hogere Veiligheidskundigen (HVK) en HSE/QHSE professionals in de Nederlandse procesindustrie"
-    if re.search(r"\b(waterkwaliteit|wateradvies|afvalwater|waterwet)\b", t):
-        return "waterkwaliteit adviseurs en waterconsultants in Nederland"
-    if re.search(r"\b(engineer|lead engineer|werktuigbouw|installatie|infra)\b", t):
-        return "ervaren engineers in de Nederlandse technische installatie-, infra- en energiesector"
-    if re.search(r"\b(business analist|informatieanalist|product owner)\b", t):
-        return "business analisten en informatieanalisten in Nederland"
-    if title:
-        return title
-    return "ervaren professionals in Nederland"
-
-
-def build_target_market_research_prompt(facts: Dict[str, Any], linkedin_size: str) -> str:
-    doelgroep = public_occupation_query(facts)
+def build_employment_conditions_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
+    functie = str(facts.get("vacaturenaam", "")).strip()
+    retry = "" if not strict_retry else """
+DIT IS EEN HERHALING OMDAT DE EERSTE UITKOMST GEEN DRIE GELDIGE ARBEIDSVOORWAARDEN OPLEVERDE.
+Kies uitsluitend uit de toegestane lijst hieronder en controleer expliciet dat elk item een primaire of secundaire arbeidsvoorwaarde is.
+"""
+    allowed = json.dumps(ALLOWED_EMPLOYMENT_CONDITIONS, ensure_ascii=False)
     return f"""
-Je bent recruitment researcher voor de Nederlandse arbeidsmarkt. Doe ACTUEEL INTERNETONDERZOEK naar deze BEROEPSDOELGROEP:
-Doelgroep/functiefamilie: {doelgroep}
-Land: Nederland
-LinkedIn doelgroepgrootte: {linkedin_size}
-
-ZEER BELANGRIJK — BRONSCHEIDING:
-- Je krijgt bewust GEEN vacaturetekst, intake, werkgever, manager-nadruk, USP's, taken of voorwaarden.
-- Gebruik die informatie dus ook NIET en probeer die niet te reconstrueren.
-- Onderzoek alleen de beroepsgroep/functiefamilie op de externe arbeidsmarkt.
-
-Onderzoek uitsluitend:
-1. een specifieke maar beroepsgroep-generieke doelgroepomschrijving;
-2. gangbare vergelijkbare functietitels;
-3. typen organisaties en echte bedrijven waar mensen uit deze beroepsgroep werken;
-4. concurrenten op bedrijfsniveau voor het aantrekken van deze beroepsgroep.
-
-Regels:
-- Doelgroepomschrijving beschrijft WIE deze professionals zijn, niet wat de openstaande vacature vraagt.
-- Vermijd vacature-specifieke taken, wetgeving, projecten, cultuur, werkgeverseigenschappen en USP's.
-- Gebruik echte bedrijfsnamen, nooit placeholders.
-- Als LinkedIn-doelgroepgrootte is ingevuld, neem die letterlijk over.
-- Onderzoek hier GEEN pullfactoren, arbeidsvoorwaarden, leeftijd of gender; dat gebeurt apart.
-
-Geef uitsluitend JSON:
-{{
-  "doelgroep_titel": "",
-  "doelgroep_omschrijving": "",
-  "verwachte_doelgroepgrootte": "",
-  "belangrijkste_functietitels": [],
-  "concurrenten_bedrijven": [],
-  "zoekrichting": [],
-  "bronnen": []
-}}
-""".strip()
-
-
-def build_demographics_research_prompt(facts: Dict[str, Any]) -> str:
-    doelgroep = public_occupation_query(facts)
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de DEMOGRAFISCHE OPBOUW van deze Nederlandse beroepsdoelgroep:
-Doelgroep/functiefamilie: {doelgroep}
-Land: Nederland
-
-Onderzoek uitsluitend:
-1. man-vrouwverhouding binnen deze beroepsgroep of, als dat niet beschikbaar is, de meest vergelijkbare functiefamilie/sector;
-2. leeftijdsverdeling binnen dezelfde beroepsgroep/functiefamilie/sector.
-
-Bronhiërarchie — gebruik bij iedere run in deze volgorde dezelfde bronsoorten:
-1. CBS / StatLine of andere officiële Nederlandse statistiek;
-2. UWV, ROA, SBB of officiële branche-/beroepsorganisaties;
-3. gerenommeerde Nederlandse arbeidsmarkt- of sectoronderzoeken.
-Gebruik alleen een bredere sector als specifiekere beroepsdata niet beschikbaar is.
-
-Consistentieregels:
-- Baseer man-vrouw én leeftijd zoveel mogelijk op dezelfde beroepsafbakening en dezelfde bronfamilie.
-- Geef de meest recente beschikbare Nederlandse data prioriteit.
-- Rond percentages af op hele procenten.
-- Man + vrouw moet exact 100% zijn.
-- Leeftijdscategorieën moeten samen exact 100% zijn.
-- Gebruik ALTIJD deze leeftijdscategorieën: 15-24, 25-34, 35-49, 50+.
-- Maak geen vrije AI-schatting als er geen bruikbare bron is; gebruik dan de dichtstbijzijnde aantoonbare functiefamilie/sector en benoem dat in toelichting.
-- Gebruik geen informatie uit vacaturetekst of intake als demografische bron.
-
-Geef uitsluitend JSON:
-{{
-  "geslacht": {{"man": "", "vrouw": ""}},
-  "leeftijdsverdeling": ["15-24: %", "25-34: %", "35-49: %", "50+: %"],
-  "bronnen": [],
-  "afbakening": "",
-  "toelichting": ""
-}}
-""".strip()
-
-
-def merge_research_parts(market: Dict[str, Any], conditions: Dict[str, Any], pull: Dict[str, Any], demographics: Dict[str, Any]) -> Dict[str, Any]:
-    result = dict(market or {})
-    result["belangrijkste_arbeidsvoorwaarden"] = clean_list((conditions or {}).get("belangrijkste_arbeidsvoorwaarden", []))[:3]
-    result["pullfactoren"] = clean_list((pull or {}).get("pullfactoren", []))[:3]
-    result["geslacht"] = (demographics or {}).get("geslacht", {"man": "", "vrouw": ""})
-    result["leeftijdsverdeling"] = clean_list((demographics or {}).get("leeftijdsverdeling", []))[:4]
-    result["demografie_afbakening"] = (demographics or {}).get("afbakening", "")
-    result["research_bronnen"] = list(dict.fromkeys(
-        clean_list((market or {}).get("bronnen", [])) +
-        clean_list((conditions or {}).get("bronnen", [])) +
-        clean_list((pull or {}).get("bronnen", [])) +
-        clean_list((demographics or {}).get("bronnen", []))
-    ))
-    result["research_toelichting"] = "Doelgroep, arbeidsvoorwaarden, pullfactoren en demografie zijn als aparte verplichte webonderzoeksvragen uitgevoerd."
-    return result
-
-
-def build_employment_conditions_research_prompt(facts: Dict[str, Any]) -> str:
-    return f"""
-Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar de Nederlandse arbeidsmarkt voor deze doelgroep:
-Functie/doelgroep: {facts.get('vacaturenaam','')}
+Je bent arbeidsmarktonderzoeker. Doe ACTUEEL INTERNETONDERZOEK naar werknemersvoorkeuren binnen de Nederlandse arbeidsmarkt voor de beroepsgroep/functiefamilie:
+{functie}
 Land: Nederland
 
 Onderzoek uitsluitend deze vraag:
-WELKE 3 ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP IN HET ALGEMEEN HET BELANGRIJKST WANNEER ZIJ IN DIENST ZIJN?
+WELKE DRIE PRIMAIRE OF SECUNDAIRE ARBEIDSVOORWAARDEN VINDT DEZE DOELGROEP HET BELANGRIJKST WANNEER ZIJ IN DIENST ZIJN?
 
-Regels:
-- Gebruik verplicht web_search en externe arbeidsmarktbronnen zoals arbeidsmarktonderzoeken, werknemersenquêtes, brancheonderzoeken en relevante doelgroepstudies.
-- Gebruik de vacaturetekst, intake, werkgever en diens vacaturepagina NIET als bron.
-- Zoek dus niet naar wat DEZE werkgever aanbiedt, maar naar wat DEZE DOELGROEP belangrijk vindt.
-- Geef precies 3 generieke categorieën, bijvoorbeeld: Salaris, Pensioenregeling, Vakantiedagen, Hybride werken, Mobiliteit, Ontwikkelmogelijkheden, Bonusregeling of Flexibele werktijden.
-- Eén onderwerp per item.
-- Geen bedragen, percentages, aantallen dagen, uren of andere concrete werkgeversvoorwaarden.
-- Voeg bronnen/domeinen toe.
+{retry}
+HARD REGELS:
+- Gebruik verplicht live web_search en externe arbeidsmarktbronnen, werknemersenquêtes, brancheonderzoeken en doelgroepstudies.
+- Gebruik de vacaturetekst, intake, werkgever, bedrijfsnaam en vacaturepagina NIET als bron.
+- Een arbeidsvoorwaarde is een concrete contractuele/financiële/verlof-/mobiliteits-/werktijd-/opleidingsregeling.
+- Werksfeer, cultuur, autonomie, impact, uitdaging, zingeving, doorgroei, carrièrekansen, ontwikkelmogelijkheden, werkzekerheid en inhoud van het werk zijn GEEN arbeidsvoorwaarden voor deze slide.
+- Geef geen bedragen, percentages, aantallen dagen of werkgeversspecifieke invulling.
+- Kies exact 3 verschillende categorieën uit deze toegestane lijst:
+{allowed}
+- Eén categorie per item, zonder toelichting in de array.
+- Rangschik op relevantie voor deze beroepsgroep.
+- Voeg de gebruikte bronnen/domeinen apart toe.
 
 Geef uitsluitend JSON:
 {{
@@ -1981,7 +1892,6 @@ Geef uitsluitend JSON:
   "toelichting": ""
 }}
 """.strip()
-
 
 def build_pullfactors_research_prompt(facts: Dict[str, Any], strict_retry: bool = False) -> str:
     functie = str(facts.get("vacaturenaam", "")).strip()
@@ -2382,12 +2292,7 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     for fk in ["klantnaam", "vacaturenaam", "salaris"]:
         if is_empty_or_placeholder(facts.get(fk, "")) and fallback.get(fk):
             facts[fk] = fallback[fk]
-    # Vacaturetekst is altijd leidend voor salaris. Intake alleen als vacature geen salaris bevat.
-    preferred_salary = extract_salary_prefer_vacancy(vacature, intake)
-    if preferred_salary:
-        facts["salaris"] = preferred_salary
-    else:
-        facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
+    facts["salaris"] = normalize_salary_display(facts.get("salaris", ""))
 
     extracted_no_go = extract_no_go_companies_from_intake(intake + "\n" + extra)
     if extracted_no_go:
@@ -2405,6 +2310,16 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     if status:
         status.write("Stap 3/8: belangrijkste arbeidsvoorwaarden online onderzoeken")
     conditions = call_openai_json(build_employment_conditions_research_prompt(facts), use_web=True)
+    normalized_conditions = normalize_conditions(conditions.get("belangrijkste_arbeidsvoorwaarden", []))
+    if employment_conditions_are_invalid(normalized_conditions):
+        conditions = call_openai_json(build_employment_conditions_research_prompt(facts, strict_retry=True), use_web=True)
+        normalized_conditions = normalize_conditions(conditions.get("belangrijkste_arbeidsvoorwaarden", []))
+    if employment_conditions_are_invalid(normalized_conditions):
+        raise RuntimeError(
+            "Online arbeidsvoorwaardenonderzoek leverde geen drie geldige primaire/secundaire arbeidsvoorwaarden op. "
+            "De tool stopt bewust in plaats van cultuur-, inhouds- of vacaturekenmerken te tonen."
+        )
+    conditions["belangrijkste_arbeidsvoorwaarden"] = normalized_conditions
 
     if status:
         status.write("Stap 4/8: pullfactoren onafhankelijk online onderzoeken")
@@ -2443,12 +2358,11 @@ def generate_with_openai_pipeline(vacature: str, intake: str, linkedin_size: str
     stable_demo = deterministic_demographics(facts, research)
     data.setdefault("doelgroepanalyse", {})["geslacht"] = stable_demo.get("geslacht", {"man": "", "vrouw": ""})
     data.setdefault("doelgroepanalyse", {})["leeftijdsverdeling"] = stable_demo.get("leeftijdsverdeling", normalize_age_distribution(research.get("leeftijdsverdeling", [])))
-    final_salary = extract_salary_prefer_vacancy(vacature, intake)
-    data.setdefault("basisgegevens", {})["salaris"] = final_salary or normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
+    data.setdefault("basisgegevens", {})["salaris"] = normalize_salary_display(data.get("basisgegevens", {}).get("salaris", ""))
 
     # Afspraken zijn bewust een vast, bewerkbaar startpunt uit het voorbeeldtemplate.
     data["afspraken"] = DEFAULT_AFSPRAKEN.copy()
-    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.6: vacancy-leading salary -> intact task extraction -> external market/conditions/pull/demographics -> writer -> template-first export"
+    data.setdefault("kwaliteitscontrole", {})["pipeline"] = "v2.4.4: facts -> external market -> external conditions -> closed-list external pull factors -> demographics -> writer -> compact candidate bullets + stable demographics + larger agreement editors"
     return ensure_core_keys(data)
 
 
